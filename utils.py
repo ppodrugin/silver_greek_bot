@@ -67,6 +67,7 @@ def word_similarity(word1, word2):
     """
     Вычисляет похожесть между двумя словами (0.0 - 1.0)
     Учитывает фонетическую похожесть греческих слов
+    Более строгая версия для точной оценки произношения
     """
     if word1 == word2:
         return 1.0
@@ -78,17 +79,44 @@ def word_similarity(word1, word2):
     if word1_no_accents == word2_no_accents:
         return 0.95  # Почти совпадает, только ударения разные
     
-    # Специальная обработка для похожих греческих окончаний
-    # Например, "φίλοι" и "φίλη" фонетически очень похожи
-    # Проверяем, если слова отличаются только последними 1-2 символами
-    if len(word1_no_accents) >= 3 and len(word2_no_accents) >= 3:
-        # Берем корень слова (без последних 2 символов)
-        root1 = word1_no_accents[:-2] if len(word1_no_accents) > 2 else word1_no_accents
-        root2 = word2_no_accents[:-2] if len(word2_no_accents) > 2 else word2_no_accents
+    # Строгая проверка: если слова отличаются критичными буквами, это разные слова
+    # Например, "φίλος" (друг, м.р.) и "φίλη" (подруга, ж.р.) - разные слова
+    # "φίλος" и "φίλοι" (друзья) - разные формы
+    min_len = min(len(word1_no_accents), len(word2_no_accents))
+    if min_len >= 3:
+        # Проверяем последние 2 символа - если они сильно отличаются, это разные слова/формы
+        suffix1 = word1_no_accents[-2:] if len(word1_no_accents) >= 2 else word1_no_accents
+        suffix2 = word2_no_accents[-2:] if len(word2_no_accents) >= 2 else word2_no_accents
         
-        if root1 == root2:
-            # Корни совпадают, отличаются только окончания - это фонетически похоже
-            return 0.75
+        if suffix1 != suffix2:
+            # Если окончания разные, это может быть другая форма или другое слово
+            # Проверяем корень
+            root1 = word1_no_accents[:-2] if len(word1_no_accents) > 2 else word1_no_accents
+            root2 = word2_no_accents[:-2] if len(word2_no_accents) > 2 else word2_no_accents
+            
+            if root1 == root2:
+                # Корни совпадают, но окончания разные - это разные формы
+                # Для обучения произношению это должно считаться неправильным
+                # Снижаем похожесть значительно
+                return 0.65  # Снизили с 0.75 до 0.65 для более строгой оценки
+    
+    # Проверяем критические различия в середине слова
+    # Если слова отличаются в середине (не только в начале/конце), это серьезная ошибка
+    min_len = min(len(word1_no_accents), len(word2_no_accents))
+    if min_len >= 4:
+        # Проверяем среднюю часть слова (исключая первый и последний символ)
+        mid1 = word1_no_accents[1:-1] if len(word1_no_accents) > 2 else word1_no_accents
+        mid2 = word2_no_accents[1:-1] if len(word2_no_accents) > 2 else word2_no_accents
+        
+        # Если средние части сильно отличаются, это разные слова
+        if mid1 and mid2:
+            mid_distance = levenshtein_distance(mid1, mid2)
+            mid_similarity = 1.0 - (mid_distance / max(len(mid1), len(mid2)))
+            if mid_similarity < 0.7:  # Средняя часть сильно отличается
+                # Это разные слова, снижаем похожесть
+                base_similarity = levenshtein_distance(word1_no_accents, word2_no_accents)
+                max_len = max(len(word1_no_accents), len(word2_no_accents))
+                return max(0.0, 1.0 - (base_similarity / max_len) - 0.2)  # Штраф за различия в середине
     
     # Используем расстояние Левенштейна
     max_len = max(len(word1_no_accents), len(word2_no_accents))
@@ -109,8 +137,19 @@ def word_similarity(word1, word2):
             else:
                 break
         
-        if common_prefix >= min_len * 0.7:  # Если 70%+ символов совпадают в начале
+        if common_prefix >= min_len * 0.8:  # Если 80%+ символов совпадают в начале
             similarity = max(similarity, 0.7)
+    
+    # Дополнительная проверка: если слова отличаются критичными буквами в середине
+    # (например, λ vs κ в καλώς vs κακός), это разные слова
+    if min_len >= 4:
+        # Проверяем первые 3 символа - если они сильно отличаются, это разные слова
+        prefix1 = word1_no_accents[:3]
+        prefix2 = word2_no_accents[:3]
+        if prefix1 != prefix2:
+            prefix_sim = 1.0 - (levenshtein_distance(prefix1, prefix2) / 3.0)
+            if prefix_sim < 0.67:  # Первые 3 символа сильно отличаются
+                similarity *= 0.6  # Значительно снижаем похожесть
     
     return max(0.0, similarity)
 
@@ -160,12 +199,13 @@ def compare_texts_detailed(user_text, correct_text):
                 best_similarity = sim
                 best_match_idx = j
         
-        # Если похожесть достаточна (>= 0.7), считаем совпадением
-        if best_similarity >= 0.7 and best_match_idx is not None:
+        # Если похожесть достаточна (>= 0.8), считаем совпадением
+        # Повысили порог для более строгой оценки
+        if best_similarity >= 0.8 and best_match_idx is not None:
             user_idx = best_match_idx + 1  # Переходим к следующему слову
         else:
             # Ошибка: слово не распознано или распознано неправильно
-            if best_match_idx is not None and best_similarity > 0.3:
+            if best_match_idx is not None and best_similarity > 0.5:
                 # Слово распознано, но неправильно
                 mistakes.append({
                     'position': correct_idx,
@@ -196,7 +236,7 @@ def compare_texts_detailed(user_text, correct_text):
                     best_sim = sim
                     nearest_correct_idx = k
             
-            if best_sim < 0.7:
+            if best_sim < 0.8:
                 mistakes.append({
                     'position': nearest_correct_idx if nearest_correct_idx is not None else len(correct_words),
                     'recognized': user_words[j],
@@ -209,7 +249,8 @@ def compare_texts_detailed(user_text, correct_text):
     correct_matches = total_words - len(mistakes)
     similarity = correct_matches / total_words if total_words > 0 else 0.0
     
-    is_correct = similarity >= 0.7 and len(mistakes) == 0
+    # Повысили порог для более строгой оценки
+    is_correct = similarity >= 0.85 and len(mistakes) == 0
     
     return is_correct, similarity, mistakes
 
@@ -246,7 +287,8 @@ def compare_texts(user_text, correct_text):
     if len(user_words) == 0 or len(correct_words) == 0:
         # Сравниваем как целые строки
         similarity = word_similarity(user_no_accents, correct_no_accents)
-        return similarity >= 0.6, similarity
+        # Еще больше повысили порог для более строгой оценки
+        return similarity >= 0.8, similarity
     
     # Греческие артикли (для более гибкого сравнения)
     greek_articles = {'ο', 'η', 'το', 'οι', 'τα', 'του', 'της', 'των'}
@@ -283,16 +325,29 @@ def compare_texts(user_text, correct_text):
         # Средняя похожесть основных слов
         main_similarity = total_similarity / len(correct_main_words) if correct_main_words else 0.0
         
-        # Если основные слова очень похожи (>0.7), считаем это хорошим результатом
-        # даже если артикли не совпадают
-        if main_similarity >= 0.7:
+        # Если основные слова очень похожи (>0.85), считаем это хорошим результатом
+        # даже если артикли не совпадают (еще больше повысили порог)
+        if main_similarity >= 0.85:
             final_similarity = main_similarity
             is_correct = True
         else:
-            # Учитываем артикли, но с меньшим весом
-            article_similarity = 1.0 if user_articles == correct_articles else 0.5
-            final_similarity = main_similarity * 0.8 + article_similarity * 0.2
-            is_correct = final_similarity >= 0.6
+            # Если основные слова сильно отличаются (<0.7), это неправильно
+            # даже если артикли совпадают
+            if main_similarity < 0.7:
+                final_similarity = main_similarity
+                is_correct = False
+            else:
+                # Учитываем артикли, но с меньшим весом
+                # ВАЖНО: если основное слово имеет похожесть < 0.75, это неправильно
+                # даже если артикли совпадают
+                if main_similarity < 0.75:
+                    final_similarity = main_similarity
+                    is_correct = False
+                else:
+                    article_similarity = 1.0 if user_articles == correct_articles else 0.5
+                    final_similarity = main_similarity * 0.9 + article_similarity * 0.1
+                    # Еще больше повысили порог для более строгой оценки
+                    is_correct = final_similarity >= 0.85
     else:
         # Нет основных слов, сравниваем как есть
         total_similarity = 0.0
@@ -315,27 +370,58 @@ def compare_texts(user_text, correct_text):
             total_similarity += best_similarity
         
         final_similarity = total_similarity / len(correct_words) if correct_words else 0.0
-        is_correct = final_similarity >= 0.6
+        # Еще больше повысили порог для более строгой оценки
+        is_correct = final_similarity >= 0.8
     
     # Также проверяем общую похожесть строки (как запасной вариант)
+    # Но НЕ используем её для повышения, если основные слова сильно отличаются
     string_similarity = word_similarity(user_no_accents, correct_no_accents)
-    final_similarity = max(final_similarity, string_similarity * 0.9)
+    # Используем строковую похожесть только если она очень высокая (>0.92)
+    # и если она не противоречит результату сравнения по словам
+    # Если основные слова имеют низкую похожесть (<0.7), игнорируем строковую похожесть
+    if user_main_words and correct_main_words:
+        main_sim_check = word_similarity(user_main_words[0], correct_main_words[0])
+        if main_sim_check >= 0.7 and string_similarity > 0.92:
+            final_similarity = max(final_similarity, string_similarity * 0.95)
+    else:
+        # Если нет основных слов, используем строковую похожесть
+        if string_similarity > 0.9:
+            final_similarity = max(final_similarity, string_similarity * 0.95)
     
-    # Дополнительная проверка: если хотя бы одно слово очень похоже (>0.75), повышаем общую похожесть
+    # Дополнительная проверка: если хотя бы одно слово очень похоже (>0.92), повышаем общую похожесть
+    # Еще больше повысили пороги для более строгой оценки
+    # ВАЖНО: не переопределяем is_correct, если основные слова сильно отличаются
     if len(user_words) > 0 and len(correct_words) > 0:
-        max_word_sim = max(
-            word_similarity(uw, cw) 
-            for uw in user_words 
-            for cw in correct_words
-        )
-        if max_word_sim > 0.75:
-            final_similarity = max(final_similarity, max_word_sim * 0.85)
-            if max_word_sim >= 0.7:
-                is_correct = True
+        # Проверяем похожесть основных слов (без артиклей)
+        if user_main_words and correct_main_words:
+            main_max_sim = max(
+                word_similarity(uw, cw) 
+                for uw in user_main_words 
+                for cw in correct_main_words
+            )
+            # Только если основные слова очень похожи (>0.92), можем повысить оценку
+            if main_max_sim > 0.92:
+                final_similarity = max(final_similarity, main_max_sim * 0.95)
+                if main_max_sim >= 0.92:
+                    is_correct = True
+        else:
+            # Если нет основных слов, проверяем все слова
+            max_word_sim = max(
+                word_similarity(uw, cw) 
+                for uw in user_words 
+                for cw in correct_words
+            )
+            if max_word_sim > 0.92:
+                final_similarity = max(final_similarity, max_word_sim * 0.95)
+                if max_word_sim >= 0.92:
+                    is_correct = True
     
-    # Для греческого языка делаем более гибкое сравнение
-    # Считаем правильным, если похожесть >= 0.6 (учитывая особенности распознавания греческого)
-    is_correct = is_correct or final_similarity >= 0.6
+    # Для греческого языка делаем более строгое сравнение
+    # Повышаем порог до 0.82 для более точной оценки
+    # Учитываем особенности распознавания греческого, но не слишком мягко
+    # ВАЖНО: не переопределяем is_correct, если он уже False из-за низкой похожести основных слов
+    if is_correct:  # Только если еще не определено как неправильное
+        is_correct = final_similarity >= 0.82
     
     return is_correct, final_similarity
 
