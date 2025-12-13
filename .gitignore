@@ -1,0 +1,25 @@
+# Переменные окружения
+.env
+
+# Временные файлы
+temp_audio_*.ogg
+*.pyc
+__pycache__/
+
+# База данных SQLite
+vocabulary.db
+vocabulary.db-journal
+
+# Старый файл словаря (если был)
+vocabulary.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Логи
+*.log
+bot.log
+
