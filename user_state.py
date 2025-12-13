@@ -39,18 +39,39 @@ def get_user_stats(user_id):
 
 async def send_next_training_word(update, context):
     """Отправляет следующее слово для тренировки"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     user_id = update.effective_user.id
     vocab = Vocabulary(user_id=user_id)
     
+    # Проверяем количество слов перед выбором
+    word_count = vocab.count()
+    logger.info(f"Попытка получить слово для user_id={user_id}, слов в словаре: {word_count}")
+    
+    if word_count == 0:
+        await update.message.reply_text(
+            "❌ Словарь пуст! Добавьте слова командой /add_words"
+        )
+        state = get_user_state(user_id)
+        state['mode'] = None
+        return
+    
     # Если пользователь в списке отслеживаемых, используем умный выбор слов
-    if is_tracked_user(user_id):
+    is_tracked = is_tracked_user(user_id)
+    logger.debug(f"Пользователь отслеживается: {is_tracked}")
+    
+    if is_tracked:
         word = vocab.get_random_word(stats_user_id=user_id)
     else:
         word = vocab.get_random_word()
     
     if not word:
+        logger.warning(f"Не удалось получить слово для user_id={user_id}, хотя count={word_count}")
         await update.message.reply_text(
-            "❌ Словарь пуст! Добавьте слова командой /add_words"
+            f"❌ Не удалось выбрать слово из словаря.\n\n"
+            f"В словаре {word_count} слов, но произошла ошибка при выборе.\n"
+            f"Попробуйте еще раз или добавьте слова командой /add_words"
         )
         state = get_user_state(user_id)
         state['mode'] = None

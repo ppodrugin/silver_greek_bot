@@ -9,16 +9,23 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Путь к файлу базы данных
-DB_PATH = os.path.join(os.path.dirname(__file__), 'vocabulary.db')
+# Используем абсолютный путь для надежности на разных платформах
+DB_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(DB_DIR, 'vocabulary.db')
 
 def get_connection():
     """Создает соединение с базой данных SQLite"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        # Убеждаемся, что директория существует
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        conn = sqlite3.connect(DB_PATH, timeout=10.0)
         conn.row_factory = sqlite3.Row  # Для доступа к колонкам по имени
+        # Включаем WAL режим для лучшей производительности и надежности
+        conn.execute("PRAGMA journal_mode=WAL")
         return conn
     except Exception as e:
         logger.error(f"Ошибка подключения к SQLite: {e}", exc_info=True)
+        logger.error(f"Путь к БД: {DB_PATH}")
         return None
 
 def init_database():

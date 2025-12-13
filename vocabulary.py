@@ -158,10 +158,23 @@ class Vocabulary:
         
         conn = get_connection()
         if not conn:
+            logger.error("Не удалось подключиться к базе данных")
             return None
         
         try:
             cursor = conn.cursor()
+            
+            # Сначала проверяем, есть ли вообще слова у пользователя
+            count_query = "SELECT COUNT(*) as count FROM vocabulary WHERE user_id = ?"
+            cursor.execute(count_query, (self.user_id,))
+            count_result = cursor.fetchone()
+            total_words = count_result['count'] if count_result else 0
+            
+            logger.debug(f"Всего слов для user_id={self.user_id}: {total_words}")
+            
+            if total_words == 0:
+                logger.warning(f"Словарь пуст для user_id={self.user_id}")
+                return None
             
             # Если stats_user_id указан (для отслеживаемых пользователей), фильтруем слова по статистике
             if stats_user_id:
@@ -176,25 +189,36 @@ class Vocabulary:
                 LIMIT 1
                 """
                 cursor.execute(query, (stats_user_id, self.user_id))
+                result = cursor.fetchone()
+                
+                if result:
+                    logger.debug(f"Найдено слово по статистике: {result['greek']}")
+                    return (result['greek'], result['russian'])
+                
+                # Если для отслеживаемого пользователя не нашлось подходящих слов по статистике,
+                # возвращаем любое случайное из его словаря (fallback)
+                logger.debug(f"Не найдено слов с (successful - unsuccessful) < 3 для user_id={self.user_id}, используем fallback")
+                fallback_query = "SELECT greek, russian FROM vocabulary WHERE user_id = ? ORDER BY RANDOM() LIMIT 1"
+                cursor.execute(fallback_query, (self.user_id,))
+                result = cursor.fetchone()
+                if result:
+                    logger.debug(f"Fallback: найдено слово {result['greek']}")
+                    return (result['greek'], result['russian'])
+                else:
+                    logger.error(f"Fallback тоже не нашел слов для user_id={self.user_id}, хотя count показал {total_words}")
+                    return None
             else:
                 # Обычный случайный выбор из словаря пользователя
                 query = "SELECT greek, russian FROM vocabulary WHERE user_id = ? ORDER BY RANDOM() LIMIT 1"
                 cursor.execute(query, (self.user_id,))
-            
-            result = cursor.fetchone()
-            
-            if result:
-                return (result['greek'], result['russian'])
-            
-            # Если для отслеживаемого пользователя не нашлось подходящих слов, возвращаем любое случайное из его словаря
-            if stats_user_id:
-                query = "SELECT greek, russian FROM vocabulary WHERE user_id = ? ORDER BY RANDOM() LIMIT 1"
-                cursor.execute(query, (self.user_id,))
                 result = cursor.fetchone()
+                
                 if result:
+                    logger.debug(f"Найдено случайное слово: {result['greek']}")
                     return (result['greek'], result['russian'])
-            
-            return None
+                else:
+                    logger.error(f"Не найдено слов для user_id={self.user_id}, хотя count показал {total_words}")
+                    return None
             
         except Exception as e:
             logger.error(f"Ошибка при получении случайного слова: {e}", exc_info=True)
