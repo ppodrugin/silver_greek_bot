@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 from telegram.constants import ChatAction
 
 from config import TELEGRAM_BOT_TOKEN
-from user_state import get_user_state, get_user_stats
+from user_state import get_user_state, get_user_stats, text_reading_stats
 
 # Настройка логирования
 logging.basicConfig(
@@ -675,7 +675,6 @@ async def handle_training_voice(update: Update, context: ContextTypes.DEFAULT_TY
     
     user_id = update.effective_user.id
     state = get_user_state(user_id)
-    stats = get_user_stats(user_id)
     vocab = Vocabulary(user_id=user_id)
     
     await update.message.reply_chat_action(ChatAction.TYPING)
@@ -735,16 +734,10 @@ async def handle_training_voice(update: Update, context: ContextTypes.DEFAULT_TY
         # Сравниваем
         is_correct, similarity = compare_texts(recognized_text, correct_greek)
         
-        stats['total_attempts'] += 1
-        stats['training_words']['total'] += 1
-        
-        # Сохраняем статистику по слову для отслеживаемых пользователей
-        if is_tracked_user(user_id):
-            vocab.record_word_result(stats_user_id=user_id, greek=correct_greek, russian=correct_russian, is_successful=is_correct)
+        # Сохраняем статистику по слову в базу данных (для всех пользователей)
+        vocab.record_word_result(stats_user_id=user_id, greek=correct_greek, russian=correct_russian, is_successful=is_correct)
         
         if is_correct:
-            stats['correct_attempts'] += 1
-            stats['training_words']['correct'] += 1
             await update.message.reply_text(
                 f"🎉 ПРАВИЛЬНО!\n\n"
                 f"Вы сказали: {recognized_text}\n"
@@ -775,7 +768,6 @@ async def handle_reading_voice(update: Update, context: ContextTypes.DEFAULT_TYP
     
     user_id = update.effective_user.id
     state = get_user_state(user_id)
-    stats = get_user_stats(user_id)
     
     await update.message.reply_chat_action(ChatAction.TYPING)
     
@@ -805,12 +797,13 @@ async def handle_reading_voice(update: Update, context: ContextTypes.DEFAULT_TYP
         # Сравниваем с детальным анализом ошибок
         is_correct, similarity, mistakes = compare_texts_detailed(recognized_text, correct_text)
         
-        stats['total_attempts'] += 1
-        stats['text_reading']['total'] += 1
+        # Обновляем статистику чтения текста в памяти
+        if user_id not in text_reading_stats:
+            text_reading_stats[user_id] = {'total': 0, 'correct': 0}
         
+        text_reading_stats[user_id]['total'] += 1
         if is_correct:
-            stats['correct_attempts'] += 1
-            stats['text_reading']['correct'] += 1
+            text_reading_stats[user_id]['correct'] += 1
             await update.message.reply_text(
                 f"🎉 ПРАВИЛЬНО!\n\n"
                 f"Вы сказали: {recognized_text}\n"

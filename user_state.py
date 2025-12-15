@@ -1,12 +1,16 @@
 """
 Управление состоянием пользователей
 """
+import logging
 from vocabulary import Vocabulary
-from database import is_tracked_user as db_is_tracked_user
+from database import is_tracked_user as db_is_tracked_user, get_connection, return_connection, get_param, USE_POSTGRES
+
+logger = logging.getLogger(__name__)
 
 # Глобальный словарь для хранения состояния пользователей
 user_states = {}
-user_stats = {}
+# Статистика чтения текста хранится в памяти
+text_reading_stats = {}
 
 def is_tracked_user(user_id):
     """
@@ -27,15 +31,66 @@ def get_user_state(user_id):
     return user_states[user_id]
 
 def get_user_stats(user_id):
-    """Получает статистику пользователя"""
-    if user_id not in user_stats:
-        user_stats[user_id] = {
-            'total_attempts': 0,
-            'correct_attempts': 0,
-            'training_words': {'total': 0, 'correct': 0},
-            'text_reading': {'total': 0, 'correct': 0}
-        }
-    return user_stats[user_id]
+    """
+    Получает статистику пользователя.
+    Статистика тренировки слов берется из базы данных.
+    Статистика чтения текста хранится в памяти.
+    """
+    # Инициализируем статистику чтения текста в памяти
+    if user_id not in text_reading_stats:
+        text_reading_stats[user_id] = {'total': 0, 'correct': 0}
+    
+    # Получаем статистику тренировки слов из базы данных
+    training_total = 0
+    training_correct = 0
+    
+    try:
+        conn = get_connection()
+        if conn:
+            cursor = conn.cursor()
+            param = get_param()
+            
+            # Суммируем successful и unsuccessful для всех слов пользователя
+            query = f"""
+            SELECT 
+                COALESCE(SUM(successful), 0) as total_successful,
+                COALESCE(SUM(unsuccessful), 0) as total_unsuccessful
+            FROM vocabulary
+            WHERE user_id = {param}
+            """
+            cursor.execute(query, (user_id,))
+            result = cursor.fetchone()
+            
+            if result:
+                if USE_POSTGRES:
+                    training_correct = result[0] if result[0] else 0
+                    training_unsuccessful = result[1] if result[1] else 0
+                else:
+                    training_correct = result['total_successful'] if result['total_successful'] else 0
+                    training_unsuccessful = result['total_unsuccessful'] if result['total_unsuccessful'] else 0
+                
+                training_total = training_correct + training_unsuccessful
+            
+            return_connection(conn)
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики тренировки слов из БД: {e}", exc_info=True)
+    
+    # Статистика чтения текста из памяти
+    reading_stats = text_reading_stats[user_id]
+    
+    # Общая статистика (тренировка + чтение)
+    total_attempts = training_total + reading_stats['total']
+    correct_attempts = training_correct + reading_stats['correct']
+    
+    return {
+        'total_attempts': total_attempts,
+        'correct_attempts': correct_attempts,
+        'training_words': {
+            'total': training_total,
+            'correct': training_correct
+        },
+        'text_reading': reading_stats
+    }
 
 async def send_next_training_word(update, context):
     """Отправляет следующее слово для тренировки"""
