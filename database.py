@@ -88,52 +88,9 @@ def get_param():
     """Возвращает placeholder для параметров запроса"""
     return '%s' if USE_POSTGRES else '?'
 
-# Универсальная функция для выполнения SQL из файла
-def execute_sql_file(conn, file_path):
-    """Выполняет SQL из файла, адаптируя под тип БД"""
-    try:
-        schema_dir = os.path.dirname(os.path.abspath(__file__))
-        full_path = os.path.join(schema_dir, file_path)
-        
-        with open(full_path, 'r', encoding='utf-8') as f:
-            sql = f.read()
-        
-        # Удаляем комментарии (строки начинающиеся с --)
-        lines = []
-        for line in sql.split('\n'):
-            # Убираем комментарии в конце строки
-            if '--' in line:
-                comment_pos = line.find('--')
-                line = line[:comment_pos]
-            lines.append(line.strip())
-        sql = '\n'.join(lines)
-        
-        # Адаптируем SQL под тип БД
-        if USE_POSTGRES:
-            # Заменяем AUTOINCREMENT на SERIAL PRIMARY KEY
-            sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
-            # Убираем AUTOINCREMENT если остался отдельно
-            sql = sql.replace('AUTOINCREMENT', '')
-        # Для SQLite оставляем как есть
-        
-        # Разбиваем на отдельные команды (разделитель - точка с запятой)
-        commands = [cmd.strip() for cmd in sql.split(';') if cmd.strip()]
-        
-        cursor = conn.cursor()
-        for command in commands:
-            if command:
-                cursor.execute(command)
-        
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка выполнения SQL из файла: {e}", exc_info=True)
-        logger.error(f"Путь к файлу: {full_path if 'full_path' in locals() else file_path}")
-        return False
-
 def init_database():
-    """Инициализирует базу данных, создавая таблицы если их еще нет"""
-    logger.info(f"🔍 Инициализация БД: USE_POSTGRES={USE_POSTGRES}")
+    """Проверяет подключение к базе данных и структуру таблиц"""
+    logger.info(f"🔍 Проверка подключения к БД: USE_POSTGRES={USE_POSTGRES}")
     
     try:
         conn = get_connection()
@@ -143,48 +100,110 @@ def init_database():
         
         cursor = conn.cursor()
         
-        # Создаем таблицы по схеме из файла (если их еще нет)
-        logger.info("📋 Создание таблиц из schema.sql (если их еще нет)...")
-        schema_file = 'schema.sql'
-        if not execute_sql_file(conn, schema_file):
-            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось создать таблицы из schema.sql!")
-            logger.error("Файл schema.sql должен присутствовать в директории с database.py")
-            return False
+        # Проверяем существование таблиц
+        logger.info("📋 Проверка структуры базы данных...")
         
-        logger.info("✅ Таблицы и индексы созданы из schema.sql")
-        
-        # Добавляем первого супер-пользователя
-        from config import SUPERUSER_ID
-        
-        if not SUPERUSER_ID:
-            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: SUPERUSER_ID не установлен в переменных окружения!")
-            logger.error("Установите SUPERUSER_ID в .env файле или переменных окружения")
-            return False
-        
-        param = get_param()
+        # Проверяем таблицу vocabulary
         if USE_POSTGRES:
-            cursor.execute(f"""
-                INSERT INTO users (user_id, is_admin, is_tracked)
-                VALUES ({param}, 1, 1)
-                ON CONFLICT (user_id) DO NOTHING
-            """, (SUPERUSER_ID,))
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'vocabulary'
+                )
+            """)
+            vocabulary_exists = cursor.fetchone()[0]
+            
+            if not vocabulary_exists:
+                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'vocabulary' не существует!")
+                logger.error("Создайте таблицы вручную согласно schema.sql")
+                return False
+            
+            # Проверяем наличие необходимых колонок в vocabulary
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'vocabulary' 
+                AND column_name IN ('id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'created_at')
+            """)
+            vocabulary_columns = {row[0] for row in cursor.fetchall()}
+            required_columns = {'id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'created_at'}
+            
+            if vocabulary_columns != required_columns:
+                missing = required_columns - vocabulary_columns
+                logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'vocabulary' отсутствуют колонки: {missing}")
+                logger.error("Структура таблицы не соответствует schema.sql")
+                return False
+            
+            # Проверяем таблицу users
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'users'
+                )
+            """)
+            users_exists = cursor.fetchone()[0]
+            
+            if not users_exists:
+                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'users' не существует!")
+                logger.error("Создайте таблицы вручную согласно schema.sql")
+                return False
+            
+            # Проверяем наличие необходимых колонок в users
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'users' 
+                AND column_name IN ('user_id', 'username', 'is_admin', 'is_tracked', 'added_at', 'notes')
+            """)
+            users_columns = {row[0] for row in cursor.fetchall()}
+            required_users_columns = {'user_id', 'username', 'is_admin', 'is_tracked', 'added_at', 'notes'}
+            
+            if users_columns != required_users_columns:
+                missing = required_users_columns - users_columns
+                logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'users' отсутствуют колонки: {missing}")
+                logger.error("Структура таблицы не соответствует schema.sql")
+                return False
         else:
-            cursor.execute(f"""
-                INSERT OR IGNORE INTO users (user_id, is_admin, is_tracked)
-                VALUES ({param}, 1, 1)
-            """, (SUPERUSER_ID,))
-        
-        conn.commit()
+            # SQLite проверка
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vocabulary'")
+            if not cursor.fetchone():
+                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'vocabulary' не существует!")
+                logger.error("Создайте таблицы вручную согласно schema.sql")
+                return False
+            
+            cursor.execute("PRAGMA table_info(vocabulary)")
+            vocabulary_columns = {row[1] for row in cursor.fetchall()}
+            required_columns = {'id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'created_at'}
+            
+            if vocabulary_columns != required_columns:
+                missing = required_columns - vocabulary_columns
+                logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'vocabulary' отсутствуют колонки: {missing}")
+                logger.error("Структура таблицы не соответствует schema.sql")
+                return False
+            
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+            if not cursor.fetchone():
+                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'users' не существует!")
+                logger.error("Создайте таблицы вручную согласно schema.sql")
+                return False
+            
+            cursor.execute("PRAGMA table_info(users)")
+            users_columns = {row[1] for row in cursor.fetchall()}
+            required_users_columns = {'user_id', 'username', 'is_admin', 'is_tracked', 'added_at', 'notes'}
+            
+            if users_columns != required_users_columns:
+                missing = required_users_columns - users_columns
+                logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'users' отсутствуют колонки: {missing}")
+                logger.error("Структура таблицы не соответствует schema.sql")
+                return False
         
         db_type = "PostgreSQL" if USE_POSTGRES else "SQLite"
-        logger.info(f"✅ База данных {db_type} инициализирована")
-        logger.info(f"✅ Супер-пользователь {SUPERUSER_ID} добавлен")
+        logger.info(f"✅ База данных {db_type} подключена")
+        logger.info("✅ Структура базы данных проверена и соответствует схеме")
         return True
         
     except Exception as e:
-        logger.error(f"Ошибка при инициализации БД: {e}", exc_info=True)
-        if conn:
-            conn.rollback()
+        logger.error(f"Ошибка при проверке БД: {e}", exc_info=True)
         return False
     finally:
         if conn:

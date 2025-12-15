@@ -1,8 +1,3 @@
--- Схема базы данных для Telegram бота изучения греческого языка
--- Поддерживает как SQLite, так и PostgreSQL
-
--- Таблица словаря пользователей
--- Каждое слово привязано к пользователю и содержит статистику тренировок
 CREATE TABLE IF NOT EXISTS vocabulary (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- SQLite: AUTOINCREMENT, PostgreSQL: SERIAL
     user_id INTEGER NOT NULL,
@@ -14,7 +9,6 @@ CREATE TABLE IF NOT EXISTS vocabulary (
     UNIQUE(user_id, greek, russian)
 );
 
--- Таблица пользователей
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     username TEXT,
@@ -24,7 +18,6 @@ CREATE TABLE IF NOT EXISTS users (
     notes TEXT
 );
 
--- Индексы для оптимизации запросов
 CREATE INDEX IF NOT EXISTS idx_vocabulary_user_id ON vocabulary(user_id);
 CREATE INDEX IF NOT EXISTS idx_vocabulary_stats ON vocabulary(user_id, successful, unsuccessful);
 CREATE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id);
