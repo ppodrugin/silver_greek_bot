@@ -275,6 +275,7 @@ class Vocabulary:
         
         conn = get_connection()
         if not conn:
+            logger.error("Не удалось получить соединение с БД для записи статистики")
             return
         
         try:
@@ -287,9 +288,11 @@ class Vocabulary:
             word_row = cursor.fetchone()
             
             if not word_row:
+                logger.warning(f"Слово не найдено в словаре: user_id={self.user_id}, greek={greek}, russian={russian}")
                 return  # Слово не найдено в словаре пользователя
             
             word_id = word_row[0] if USE_POSTGRES else word_row['id']
+            logger.debug(f"Найден word_id={word_id} для слова '{greek}' (user_id={self.user_id})")
             
             # Проверяем, есть ли уже статистика для этого слова и пользователя
             check_query = f"SELECT id, successful, unsuccessful FROM word_statistics WHERE user_id = {param} AND word_id = {param}"
@@ -298,6 +301,9 @@ class Vocabulary:
             
             if stats_row:
                 # Обновляем существующую статистику
+                old_successful = stats_row[1] if USE_POSTGRES else stats_row['successful']
+                old_unsuccessful = stats_row[2] if USE_POSTGRES else stats_row['unsuccessful']
+                
                 if is_successful:
                     update_query = f"""
                     UPDATE word_statistics 
@@ -311,6 +317,9 @@ class Vocabulary:
                     WHERE user_id = {param} AND word_id = {param}
                     """
                 cursor.execute(update_query, (stats_user_id, word_id))
+                logger.debug(f"Обновлена статистика: user_id={stats_user_id}, word_id={word_id}, "
+                           f"было: успешно={old_successful}, неуспешно={old_unsuccessful}, "
+                           f"результат={'успешно' if is_successful else 'неуспешно'}")
             else:
                 # Создаем новую запись статистики
                 if is_successful:
@@ -324,12 +333,17 @@ class Vocabulary:
                     VALUES ({param}, {param}, 0, 1)
                     """
                 cursor.execute(insert_query, (stats_user_id, word_id))
+                logger.debug(f"Создана новая запись статистики: user_id={stats_user_id}, word_id={word_id}, "
+                           f"результат={'успешно' if is_successful else 'неуспешно'}")
             
+            # Коммитим транзакцию
             conn.commit()
+            logger.debug(f"✅ Статистика успешно сохранена: user_id={stats_user_id}, word_id={word_id}")
             
         except Exception as e:
             logger.error(f"Ошибка при записи статистики слова: {e}", exc_info=True)
-            conn.rollback()
+            if conn:
+                conn.rollback()
         finally:
             if conn:
                 return_connection(conn)

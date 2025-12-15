@@ -198,34 +198,45 @@ def init_database():
             cursor.execute(create_table_query)
         
         # Создаем таблицу статистики по словам для пользователей
+        # Проверяем существование таблицы
         if USE_POSTGRES:
-            create_stats_table_query = """
-            CREATE TABLE IF NOT EXISTS word_statistics (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                word_id INTEGER NOT NULL,
-                successful INTEGER DEFAULT 0,
-                unsuccessful INTEGER DEFAULT 0,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, word_id),
-                FOREIGN KEY (word_id) REFERENCES vocabulary(id) ON DELETE CASCADE
-            );
-            """
+            cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'word_statistics');")
+            stats_table_exists = cursor.fetchone()[0]
         else:
-            create_stats_table_query = """
-            CREATE TABLE IF NOT EXISTS word_statistics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                word_id INTEGER NOT NULL,
-                successful INTEGER DEFAULT 0,
-                unsuccessful INTEGER DEFAULT 0,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, word_id),
-                FOREIGN KEY (word_id) REFERENCES vocabulary(id) ON DELETE CASCADE
-            );
-            """
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='word_statistics';")
+            stats_table_exists = cursor.fetchone()
         
-        cursor.execute(create_stats_table_query)
+        if not stats_table_exists:
+            # Таблица не существует - создаем
+            if USE_POSTGRES:
+                create_stats_table_query = """
+                CREATE TABLE word_statistics (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    word_id INTEGER NOT NULL,
+                    successful INTEGER DEFAULT 0,
+                    unsuccessful INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, word_id),
+                    FOREIGN KEY (word_id) REFERENCES vocabulary(id) ON DELETE CASCADE
+                );
+                """
+            else:
+                create_stats_table_query = """
+                CREATE TABLE word_statistics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    word_id INTEGER NOT NULL,
+                    successful INTEGER DEFAULT 0,
+                    unsuccessful INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, word_id),
+                    FOREIGN KEY (word_id) REFERENCES vocabulary(id) ON DELETE CASCADE
+                );
+                """
+            
+            cursor.execute(create_stats_table_query)
+            logger.info(f"✅ Таблица word_statistics создана для {'PostgreSQL' if USE_POSTGRES else 'SQLite'}")
         
         # Создаем единую таблицу пользователей
         if USE_POSTGRES:
