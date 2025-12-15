@@ -110,6 +110,16 @@ def init_database():
                 # Старая таблица без user_id - нужно мигрировать
                 logger.info("Обнаружена старая таблица vocabulary. Выполняем миграцию...")
                 
+                # ВАЖНО: Сохраняем статистику перед миграцией, чтобы не потерять данные
+                logger.info("Сохранение статистики перед миграцией...")
+                cursor.execute("""
+                    SELECT ws.user_id, v.id as word_id, ws.successful, ws.unsuccessful
+                    FROM word_statistics ws
+                    JOIN vocabulary v ON ws.word_id = v.id
+                """)
+                saved_stats = cursor.fetchall()
+                logger.info(f"Сохранено {len(saved_stats)} записей статистики")
+                
                 # Создаем временную таблицу с новой структурой
                 cursor.execute("""
                 CREATE TABLE vocabulary_new (
@@ -128,12 +138,40 @@ def init_database():
                 SELECT id, 0, greek, russian, created_at FROM vocabulary;
                 """)
                 
+                # Временно отключаем внешний ключ для безопасного удаления таблицы
+                cursor.execute("PRAGMA foreign_keys = OFF;")
+                
                 # Удаляем старую таблицу
                 cursor.execute("DROP TABLE vocabulary;")
                 
                 # Переименовываем новую таблицу
                 cursor.execute("ALTER TABLE vocabulary_new RENAME TO vocabulary;")
                 
+                # Включаем внешний ключ обратно
+                cursor.execute("PRAGMA foreign_keys = ON;")
+                
+                # Восстанавливаем статистику после миграции
+                if saved_stats:
+                    logger.info("Восстановление статистики после миграции...")
+                    for stat_row in saved_stats:
+                        old_word_id = stat_row['word_id']
+                        user_id_stat = stat_row['user_id']
+                        successful = stat_row['successful']
+                        unsuccessful = stat_row['unsuccessful']
+                        
+                        # Находим новый ID слова по старому ID (они должны совпадать)
+                        cursor.execute("SELECT id FROM vocabulary WHERE id = ?", (old_word_id,))
+                        new_word_row = cursor.fetchone()
+                        if new_word_row:
+                            new_word_id = new_word_row['id']
+                            cursor.execute("""
+                                INSERT INTO word_statistics (user_id, word_id, successful, unsuccessful)
+                                VALUES (?, ?, ?, ?)
+                            """, (user_id_stat, new_word_id, successful, unsuccessful))
+                    logger.info(f"✅ Восстановлено {len(saved_stats)} записей статистики")
+                
+                # Коммитим изменения после миграции
+                conn.commit()
                 logger.info("✅ Миграция завершена")
             else:
                 # Таблица уже имеет user_id - проверяем ограничение уникальности
@@ -143,6 +181,16 @@ def init_database():
                 # Если в SQL нет UNIQUE(user_id, greek, russian), нужно пересоздать таблицу
                 if 'UNIQUE(user_id, greek, russian)' not in table_sql and 'UNIQUE(user_id,greek,russian)' not in table_sql:
                     logger.info("Обнаружено старое ограничение уникальности. Выполняем миграцию...")
+                    
+                    # ВАЖНО: Сохраняем статистику перед миграцией, чтобы не потерять данные
+                    logger.info("Сохранение статистики перед миграцией...")
+                    cursor.execute("""
+                        SELECT ws.user_id, v.id as word_id, ws.successful, ws.unsuccessful
+                        FROM word_statistics ws
+                        JOIN vocabulary v ON ws.word_id = v.id
+                    """)
+                    saved_stats = cursor.fetchall()
+                    logger.info(f"Сохранено {len(saved_stats)} записей статистики")
                     
                     # Создаем временную таблицу с правильным ограничением
                     cursor.execute("""
@@ -162,12 +210,40 @@ def init_database():
                     SELECT id, COALESCE(user_id, 0), greek, russian, created_at FROM vocabulary;
                     """)
                     
+                    # Временно отключаем внешний ключ для безопасного удаления таблицы
+                    cursor.execute("PRAGMA foreign_keys = OFF;")
+                    
                     # Удаляем старую таблицу
                     cursor.execute("DROP TABLE vocabulary;")
                     
                     # Переименовываем новую таблицу
                     cursor.execute("ALTER TABLE vocabulary_new RENAME TO vocabulary;")
                     
+                    # Включаем внешний ключ обратно
+                    cursor.execute("PRAGMA foreign_keys = ON;")
+                    
+                    # Восстанавливаем статистику после миграции
+                    if saved_stats:
+                        logger.info("Восстановление статистики после миграции...")
+                        for stat_row in saved_stats:
+                            old_word_id = stat_row['word_id']
+                            user_id_stat = stat_row['user_id']
+                            successful = stat_row['successful']
+                            unsuccessful = stat_row['unsuccessful']
+                            
+                            # Находим новый ID слова по старому ID (они должны совпадать)
+                            cursor.execute("SELECT id FROM vocabulary WHERE id = ?", (old_word_id,))
+                            new_word_row = cursor.fetchone()
+                            if new_word_row:
+                                new_word_id = new_word_row['id']
+                                cursor.execute("""
+                                    INSERT INTO word_statistics (user_id, word_id, successful, unsuccessful)
+                                    VALUES (?, ?, ?, ?)
+                                """, (user_id_stat, new_word_id, successful, unsuccessful))
+                        logger.info(f"✅ Восстановлено {len(saved_stats)} записей статистики")
+                    
+                    # Коммитим изменения после миграции
+                    conn.commit()
                     logger.info("✅ Миграция ограничения уникальности завершена")
         elif not table_exists:
             # Таблица не существует - создаем новую

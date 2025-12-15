@@ -42,4 +42,4 @@ python3 bot.py
 
 - Бот использует Google Speech Recognition API (бесплатно)
 - Для команды `/ai_generate` нужен OpenAI API ключ (платный, но есть бесплатный кредит)
-- Словарь сохраняется в `vocabulary.txt`
+- Словарь сохраняется в базе данных (SQLite локально, PostgreSQL на Render)

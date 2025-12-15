@@ -12,8 +12,6 @@ vocabulary.db-journal
 vocabulary.db-shm
 vocabulary.db-wal
 
-# Старый файл словаря (если был)
-vocabulary.txt
 
 # IDE
 .vscode/

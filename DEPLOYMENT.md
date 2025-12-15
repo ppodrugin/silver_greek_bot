@@ -52,18 +52,28 @@ python-3.11.0
 
 ## Деплой на Render (Рекомендуется) ⭐
 
-### Шаг 1: Создайте аккаунт
+### Шаг 1: Подготовка кода
+Убедитесь, что код загружен на GitHub:
+```bash
+cd telegram_bot
+git add .
+git commit -m "Ready for deployment"
+git push
+```
+
+### Шаг 2: Создайте аккаунт
 1. Перейдите на https://render.com
-2. Войдите через GitHub (или создайте аккаунт)
+2. Нажмите "Get Started for Free"
+3. Войдите через GitHub (рекомендуется)
 
-### Шаг 2: Создайте Background Worker
-**ВАЖНО**: Используйте Background Worker, НЕ Web Service!
+### Шаг 3: Создайте Background Worker
+**⚠️ ВАЖНО: Используйте Background Worker, НЕ Web Service!**
 
-1. Нажмите "New +" → **"Background Worker"**
-2. Подключите ваш GitHub репозиторий
-3. Выберите репозиторий с ботом
+1. В Dashboard нажмите "New +"
+2. Выберите **"Background Worker"** (не Web Service!)
+3. Подключите ваш GitHub репозиторий с ботом
 
-### Шаг 3: Настройте сервис
+### Шаг 4: Настройте Background Worker
 Заполните форму:
 - **Name**: `greek-telegram-bot` (или любое имя)
 - **Environment**: `Python 3`
@@ -71,56 +81,23 @@ python-3.11.0
 - **Start Command**: `python3 bot.py`
 - **Plan**: `Free` (выбрано по умолчанию)
 
-### Шаг 4: Добавьте переменные окружения
+### Шаг 5: Добавьте переменные окружения
 В разделе "Environment Variables" добавьте:
-- `TELEGRAM_BOT_TOKEN` = ваш токен от @BotFather
-- `OPENAI_API_KEY` = ваш OpenAI ключ (опционально, если используете)
+- **TELEGRAM_BOT_TOKEN** = ваш токен от @BotFather
+- **OPENAI_API_KEY** = ваш OpenAI ключ (опционально)
+- **DATABASE_URL** = Internal Database URL от PostgreSQL (см. раздел "Настройка PostgreSQL" ниже)
 
-### Шаг 5: Деплой
+### Шаг 6: Создайте сервис
 1. Нажмите "Create Background Worker"
 2. Render начнет деплой (займет 2-5 минут)
 3. Проверьте логи в разделе "Logs"
-4. Бот должен запуститься автоматически
 
-### Шаг 6: Проверка
+### Шаг 7: Проверка
 После успешного деплоя:
 1. Отправьте `/start` боту в Telegram
 2. Если бот отвечает - всё работает! ✅
 
 **Примечание**: Background Worker на Render не засыпает и работает постоянно, в отличие от Web Service.
-
-## Деплой на Render
-
-### Шаг 1: Создайте аккаунт
-1. Перейдите на https://render.com
-2. Войдите через GitHub
-
-### Шаг 2: Создайте новый Web Service
-1. Нажмите "New +" → "Web Service"
-2. Подключите ваш GitHub репозиторий
-3. Выберите репозиторий с ботом
-
-### Шаг 3: Настройте сервис
-- **Name**: telegram-bot (или любое имя)
-- **Environment**: Python 3
-- **Build Command**: `pip install -r requirements.txt`
-- **Start Command**: `python3 bot.py`
-
-### Шаг 4: Добавьте переменные окружения
-В разделе "Environment Variables" добавьте:
-- `TELEGRAM_BOT_TOKEN`
-- `OPENAI_API_KEY` (опционально)
-
-### Шаг 5: Деплой
-1. Нажмите "Create Web Service"
-2. Render начнет деплой
-3. Проверьте логи
-
-**Важно**: Render может "засыпать" после неактивности. Для ботов лучше использовать **Background Worker** вместо Web Service.
-
-### Альтернатива: Background Worker на Render
-1. "New +" → "Background Worker"
-2. Настройки те же, но это предотвратит "засыпание"
 
 ## Деплой на Fly.io
 
@@ -178,13 +155,35 @@ fly deploy
 2. Отправьте `/start` боту в Telegram
 3. Проверьте, что бот отвечает
 
-## Миграция на PostgreSQL (опционально)
+## Настройка PostgreSQL на Render
 
-Для продакшена рекомендуется использовать PostgreSQL вместо SQLite:
+**⚠️ Важно**: На Render файловая система ephemeral - SQLite файлы удаляются при каждом рестарте. Используйте PostgreSQL для постоянного хранения данных.
 
-1. Создайте PostgreSQL базу на хостинге
-2. Обновите `database.py` для работы с PostgreSQL
-3. Используйте переменные окружения для подключения
+### Шаг 1: Создайте PostgreSQL базу данных
+1. В Render Dashboard нажмите "New +" → "PostgreSQL"
+2. Заполните форму:
+   - **Name**: `vocabulary-db`
+   - **Database**: `vocabulary`
+   - **Plan**: **Free**
+3. Нажмите "Create Database"
+
+### Шаг 2: Получите DATABASE_URL
+1. Откройте созданную базу данных
+2. В разделе "Connections" найдите **Internal Database URL**
+3. Скопируйте этот URL
+
+### Шаг 3: Добавьте DATABASE_URL в переменные окружения бота
+1. Откройте ваш Background Worker сервис
+2. Перейдите в раздел "Environment"
+3. Добавьте переменную:
+   - **Key**: `DATABASE_URL`
+   - **Value**: вставьте скопированный Internal Database URL
+4. Нажмите "Save Changes"
+
+### Шаг 4: Перезапустите бота
+Render автоматически перезапустит бота после добавления переменной окружения.
+
+**Проверка**: После перезапуска в логах должно быть сообщение "Используется PostgreSQL". Слова и статистика теперь будут сохраняться между перезапусками!
 
 ## Поддержка
 

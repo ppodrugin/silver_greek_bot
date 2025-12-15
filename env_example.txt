@@ -1,8 +1,0 @@
-# Telegram Bot Token (получите у @BotFather)
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-
-# OpenAI API Key (для команды 4 - генерация предложений)
-OPENAI_API_KEY=your_openai_api_key_here
-
-# SQLite база данных создается автоматически в файле vocabulary.db
-# Никаких дополнительных настроек не требуется
