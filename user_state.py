@@ -88,8 +88,19 @@ async def send_next_training_word(update, context):
     greek, russian = word
     
     state = get_user_state(user_id)
+    # Убеждаемся, что режим установлен
+    if state.get('mode') != 'training':
+        logger.warning(f"⚠️ Режим не установлен в send_next_training_word! Устанавливаем mode='training' для user_id={user_id}")
+        state['mode'] = 'training'
+    
+    # Убеждаемся, что data существует
+    if 'data' not in state:
+        state['data'] = {}
+    
     state['data']['current_greek'] = greek
     state['data']['current_russian'] = russian
+    
+    logger.info(f"📝 Отправлено слово для тренировки: user_id={user_id}, greek={greek}, russian={russian}, mode={state.get('mode')}, data_keys={list(state.get('data', {}).keys())}")
     
     await update.message.reply_text(
         f"📝 Переведите на греческий:\n\n"

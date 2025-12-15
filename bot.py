@@ -66,8 +66,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /training - Начать тренировку слов
 /read_text - Чтение текста
 /ai_generate - Генерация предложений с помощью ИИ
-/stats - Показать статистику
+/info - Показать информацию о версии и статистику
 /reset_stats - Сбросить статистику по словам (для отслеживаемых пользователей)
+/get_words - Экспортировать словарь в CSV
 /my_id - Показать свой User ID
 """
     
@@ -109,28 +110,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
    Опишите задание (например: "сгенери 50 предложений с винительным падежом")
    Бот сгенерирует предложения и начнет тренировку
 
-5️⃣ /stats - Показать статистику тренировок
+5️⃣ /info - Показать информацию о версии бота и статистику
 
 6️⃣ /get_words - Экспортировать все слова из словаря в формате CSV
 
-7️⃣ /version - Показать информацию о версии бота (время запуска, коммит)
+7️⃣ /reset_stats - Сбросить статистику по словам (только для отслеживаемых пользователей)
 
-8️⃣ /reset_stats - Сбросить статистику по словам (только для отслеживаемых пользователей)
-
-9️⃣ /my_id - Показать свой User ID (для добавления в список отслеживаемых)
+8️⃣ /my_id - Показать свой User ID (для добавления в список отслеживаемых)
 """
     
     # Команды управления пользователями только для администраторов
     if is_super:
         help_text += """
 --- Команды администратора ---
-🔟 /add_user - Добавить пользователя в список отслеживаемых
-1️⃣1️⃣ /remove_user - Удалить пользователя из списка
-1️⃣2️⃣ /list_users - Показать список отслеживаемых пользователей
-1️⃣3️⃣ /add_admin - Назначить пользователя администратором
-1️⃣4️⃣ /remove_admin - Снять права администратора
+9️⃣ /add_user - Добавить пользователя в список отслеживаемых
+🔟 /remove_user - Удалить пользователя из списка
+1️⃣1️⃣ /list_users - Показать список отслеживаемых пользователей
+1️⃣2️⃣ /add_admin - Назначить пользователя администратором
+1️⃣3️⃣ /remove_admin - Снять права администратора
 """
-    help_text += "\n1️⃣5️⃣ /cancel - Отменить текущую операцию"
+    help_text += "\n1️⃣4️⃣ /cancel - Отменить текущую операцию"
     
     await update.message.reply_text(help_text)
 
@@ -436,14 +435,17 @@ def get_git_info():
         logger.warning(f"Не удалось получить информацию о Git: {e}")
         return None, None, None
 
-async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать информацию о версии бота"""
-    commit_hash, commit_message, commit_date = get_git_info()
+async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать информацию о версии бота и статистику"""
+    from vocabulary import Vocabulary
     
-    # Форматируем время запуска
+    user_id = update.effective_user.id
+    
+    # Часть 1: Информация о версии
+    commit_hash, commit_message, commit_date = get_git_info()
     start_time_str = BOT_START_TIME.strftime("%Y-%m-%d %H:%M:%S UTC")
     
-    message = "📋 Информация о версии бота:\n\n"
+    message = "📋 Информация о боте:\n\n"
     message += f"🕐 Запущен: {start_time_str}\n"
     
     if commit_hash:
@@ -456,6 +458,46 @@ async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         message += "\n⚠️ Информация о коммите недоступна\n"
         message += "(возможно, бот запущен не из Git репозитория)"
+    
+    # Часть 2: Статистика
+    stats = get_user_stats(user_id)
+    vocab = Vocabulary(user_id=user_id)
+    vocab_count = vocab.count()
+    
+    total = stats['total_attempts']
+    correct = stats['correct_attempts']
+    accuracy = (correct / total * 100) if total > 0 else 0
+    
+    training_total = stats['training_words']['total']
+    training_correct = stats['training_words']['correct']
+    training_accuracy = (training_correct / training_total * 100) if training_total > 0 else 0
+    
+    reading_total = stats['text_reading']['total']
+    reading_correct = stats['text_reading']['correct']
+    reading_accuracy = (reading_correct / reading_total * 100) if reading_total > 0 else 0
+    
+    message += f"""
+    
+📊 Ваша статистика:
+
+📚 Словарь:
+   Слов в словаре: {vocab_count}
+
+🎯 Общая статистика:
+   Всего попыток: {total}
+   Правильных: {correct}
+   Точность: {accuracy:.1f}%
+
+📝 Тренировка слов:
+   Попыток: {training_total}
+   Правильных: {training_correct}
+   Точность: {training_accuracy:.1f}%
+
+📖 Чтение текста:
+   Попыток: {reading_total}
+   Правильных: {reading_correct}
+   Точность: {reading_accuracy:.1f}%
+    """
     
     await update.message.reply_text(message, parse_mode='HTML')
 
@@ -511,51 +553,6 @@ async def get_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(message, parse_mode='Markdown')
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать статистику пользователя"""
-    from vocabulary import Vocabulary
-    
-    user_id = update.effective_user.id
-    stats = get_user_stats(user_id)
-    
-    # Получаем статистику словаря
-    vocab = Vocabulary(user_id=user_id)
-    vocab_count = vocab.count()
-    
-    total = stats['total_attempts']
-    correct = stats['correct_attempts']
-    accuracy = (correct / total * 100) if total > 0 else 0
-    
-    training_total = stats['training_words']['total']
-    training_correct = stats['training_words']['correct']
-    training_accuracy = (training_correct / training_total * 100) if training_total > 0 else 0
-    
-    reading_total = stats['text_reading']['total']
-    reading_correct = stats['text_reading']['correct']
-    reading_accuracy = (reading_correct / reading_total * 100) if reading_total > 0 else 0
-    
-    stats_text = f"""
-📊 Ваша статистика:
-
-📚 Словарь:
-   Слов в словаре: {vocab_count}
-
-🎯 Общая статистика:
-   Всего попыток: {total}
-   Правильных: {correct}
-   Точность: {accuracy:.1f}%
-
-📝 Тренировка слов:
-   Попыток: {training_total}
-   Правильных: {training_correct}
-   Точность: {training_accuracy:.1f}%
-
-📖 Чтение текста:
-   Попыток: {reading_total}
-   Правильных: {reading_correct}
-   Точность: {reading_accuracy:.1f}%
-    """
-    await update.message.reply_text(stats_text)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отменить текущую операцию"""
@@ -598,16 +595,21 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = get_user_state(user_id)
     
-    logger.debug(f"handle_voice: user_id={user_id}, mode={state.get('mode')}, data={state.get('data')}")
+    current_mode = state.get('mode')
+    logger.info(f"🎤 handle_voice: user_id={user_id}, mode={current_mode}, data_keys={list(state.get('data', {}).keys())}")
     
-    if state['mode'] == 'training':
+    if current_mode == 'training':
+        logger.info(f"✅ Режим тренировки активен для user_id={user_id}")
         await handle_training_voice(update, context)
-    elif state['mode'] == 'read_text':
+    elif current_mode == 'read_text':
+        logger.info(f"✅ Режим чтения текста активен для user_id={user_id}")
         await handle_reading_voice(update, context)
-    elif state['mode'] == 'ai_training':
+    elif current_mode == 'ai_training':
+        logger.info(f"✅ Режим AI тренировки активен для user_id={user_id}")
         from commands import handle_ai_training_voice
         await handle_ai_training_voice(update, context)
     else:
+        logger.warning(f"❌ Неизвестный режим для user_id={user_id}: mode={current_mode}, state={state}")
         await update.message.reply_text(
             "Сначала запустите тренировку (/training), чтение текста (/read_text) или генерацию (/ai_generate)"
         )
@@ -830,9 +832,8 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("info", info_command))
     application.add_handler(CommandHandler("get_words", get_words))
-    application.add_handler(CommandHandler("version", version_command))
     application.add_handler(CommandHandler("reset_stats", reset_stats))
     application.add_handler(CommandHandler("my_id", my_id))
     application.add_handler(CommandHandler("add_user", add_user))
