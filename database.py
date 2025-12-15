@@ -1,32 +1,85 @@
 """
-Работа с базой данных SQLite
+Работа с базой данных (SQLite для локальной разработки, PostgreSQL для продакшена)
 """
 import logging
-import sqlite3
 import os
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Путь к файлу базы данных
-# Используем абсолютный путь для надежности на разных платформах
-DB_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(DB_DIR, 'vocabulary.db')
+# Определяем, какую БД использовать
+USE_POSTGRES = bool(os.getenv('DATABASE_URL'))
 
-def get_connection():
-    """Создает соединение с базой данных SQLite"""
+if USE_POSTGRES:
+    # Используем PostgreSQL (для Render)
+    logger.info("Используется PostgreSQL (DATABASE_URL найден)")
     try:
-        # Убеждаемся, что директория существует
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        conn = sqlite3.connect(DB_PATH, timeout=10.0)
-        conn.row_factory = sqlite3.Row  # Для доступа к колонкам по имени
-        # Включаем WAL режим для лучшей производительности и надежности
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
-    except Exception as e:
-        logger.error(f"Ошибка подключения к SQLite: {e}", exc_info=True)
-        logger.error(f"Путь к БД: {DB_PATH}")
-        return None
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        from psycopg2.pool import ThreadedConnectionPool
+        
+        # Пул соединений для PostgreSQL
+        connection_pool = None
+        
+        def get_connection():
+            """Создает соединение с базой данных PostgreSQL"""
+            global connection_pool
+            
+            if connection_pool is None:
+                try:
+                    db_url = os.getenv('DATABASE_URL')
+                    connection_pool = ThreadedConnectionPool(1, 5, db_url)
+                    logger.info("✅ Пул соединений PostgreSQL создан")
+                except Exception as e:
+                    logger.error(f"Ошибка создания пула соединений PostgreSQL: {e}", exc_info=True)
+                    return None
+            
+            try:
+                conn = connection_pool.getconn()
+                return conn
+            except Exception as e:
+                logger.error(f"Ошибка получения соединения из пула: {e}", exc_info=True)
+                return None
+        
+        def return_connection(conn):
+            """Возвращает соединение в пул"""
+            global connection_pool
+            if connection_pool and conn:
+                try:
+                    connection_pool.putconn(conn)
+                except Exception as e:
+                    logger.error(f"Ошибка возврата соединения в пул: {e}", exc_info=True)
+    except ImportError:
+        logger.error("psycopg2 не установлен! Установите: pip install psycopg2-binary")
+        USE_POSTGRES = False
+
+if not USE_POSTGRES:
+    # Используем SQLite (для локальной разработки)
+    logger.info("Используется SQLite (локальная разработка)")
+    import sqlite3
+    
+    DB_DIR = os.path.dirname(os.path.abspath(__file__))
+    DB_PATH = os.path.join(DB_DIR, 'vocabulary.db')
+    
+    def get_connection():
+        """Создает соединение с базой данных SQLite"""
+        try:
+            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+            conn = sqlite3.connect(DB_PATH, timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            return conn
+        except Exception as e:
+            logger.error(f"Ошибка подключения к SQLite: {e}", exc_info=True)
+            logger.error(f"Путь к БД: {DB_PATH}")
+            return None
+    
+    def return_connection(conn):
+        """Закрывает соединение SQLite"""
+        if conn:
+            try:
+                conn.close()
+            except Exception as e:
+                logger.error(f"Ошибка закрытия соединения SQLite: {e}", exc_info=True)
 
 def init_database():
     """Инициализирует базу данных и создает таблицу если её нет"""
@@ -42,14 +95,16 @@ def init_database():
         table_exists = cursor.fetchone()
         
         if table_exists:
-            # Таблица существует - проверяем структуру
-            cursor.execute("PRAGMA table_info(vocabulary);")
-            columns = {row[1]: row for row in cursor.fetchall()}
-            
-            # Проверяем, есть ли колонка user_id
-            if 'user_id' not in columns:
-                # Старая таблица без user_id - нужно мигрировать
-                logger.info("Обнаружена старая таблица vocabulary. Выполняем миграцию...")
+            # Таблица существует - для PostgreSQL просто пропускаем миграцию
+            # Для SQLite проверяем структуру
+            if not USE_POSTGRES:
+                cursor.execute("PRAGMA table_info(vocabulary);")
+                columns = {row[1]: row for row in cursor.fetchall()}
+                
+                # Проверяем, есть ли колонка user_id
+                if 'user_id' not in columns:
+                    # Старая таблица без user_id - нужно мигрировать
+                    logger.info("Обнаружена старая таблица vocabulary. Выполняем миграцию...")
                 
                 # Создаем временную таблицу с новой структурой
                 cursor.execute("""
@@ -154,40 +209,41 @@ def init_database():
         
         cursor.execute(create_users_table_query)
         
-        # Миграция данных из старых таблиц (если они существуют)
-        try:
-            # Проверяем существование старых таблиц
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='superusers'")
-            if cursor.fetchone():
-                # Мигрируем супер-пользователей
-                cursor.execute("SELECT user_id, username FROM superusers")
+        # Миграция данных из старых таблиц (только для SQLite)
+        if not USE_POSTGRES:
+            try:
+                # Проверяем существование старых таблиц
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='superusers'")
+                if cursor.fetchone():
+                    # Мигрируем супер-пользователей
+                    cursor.execute("SELECT user_id, username FROM superusers")
                 for row in cursor.fetchall():
                     username = row['username'] if 'username' in row.keys() else None
                     cursor.execute("""
                         INSERT OR REPLACE INTO users (user_id, username, is_admin, is_tracked)
                         VALUES (?, ?, 1, 1)
                     """, (row['user_id'], username))
+                    
+                    # Удаляем старую таблицу
+                    cursor.execute("DROP TABLE superusers")
                 
-                # Удаляем старую таблицу
-                cursor.execute("DROP TABLE superusers")
-            
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracked_users'")
-            if cursor.fetchone():
-                # Мигрируем отслеживаемых пользователей
-                cursor.execute("SELECT user_id, username FROM tracked_users")
-                for row in cursor.fetchall():
-                    username = row['username'] if 'username' in row.keys() else None
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO users (user_id, username, is_admin, is_tracked)
-                        VALUES (?, ?, 
-                            COALESCE((SELECT is_admin FROM users WHERE user_id = ?), 0),
-                            1)
-                    """, (row['user_id'], username, row['user_id']))
-                
-                # Удаляем старую таблицу
-                cursor.execute("DROP TABLE tracked_users")
-        except Exception as e:
-            logger.warning(f"Предупреждение при миграции: {e}", exc_info=True)
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracked_users'")
+                if cursor.fetchone():
+                    # Мигрируем отслеживаемых пользователей
+                    cursor.execute("SELECT user_id, username FROM tracked_users")
+                    for row in cursor.fetchall():
+                        username = row['username'] if 'username' in row.keys() else None
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO users (user_id, username, is_admin, is_tracked)
+                            VALUES (?, ?, 
+                                COALESCE((SELECT is_admin FROM users WHERE user_id = ?), 0),
+                                1)
+                        """, (row['user_id'], username, row['user_id']))
+                    
+                    # Удаляем старую таблицу
+                    cursor.execute("DROP TABLE tracked_users")
+            except Exception as e:
+                logger.warning(f"Предупреждение при миграции: {e}", exc_info=True)
         
         # Добавляем первого супер-пользователя (владельца бота)
         SUPERUSER_ID = 799341043
@@ -206,7 +262,8 @@ def init_database():
         
         conn.commit()
         
-        logger.info("✅ База данных SQLite инициализирована")
+        db_type = "PostgreSQL" if USE_POSTGRES else "SQLite"
+        logger.info(f"✅ База данных {db_type} инициализирована")
         logger.info(f"✅ Супер-пользователь {SUPERUSER_ID} добавлен")
         return True
         
@@ -215,7 +272,7 @@ def init_database():
         return False
     finally:
         if conn:
-            conn.close()
+            return_connection(conn)
 
 def add_user(user_id, username=None, is_admin=False, is_tracked=False, notes=None):
     """
