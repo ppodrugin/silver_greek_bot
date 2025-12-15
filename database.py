@@ -169,47 +169,87 @@ def init_database():
                     cursor.execute("ALTER TABLE vocabulary_new RENAME TO vocabulary;")
                     
                     logger.info("✅ Миграция ограничения уникальности завершена")
-        else:
+        elif not table_exists:
             # Таблица не существует - создаем новую
-            create_table_query = """
-            CREATE TABLE vocabulary (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL DEFAULT 0,
-                greek TEXT NOT NULL,
-                russian TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, greek, russian)
-            );
-            """
+            if USE_POSTGRES:
+                # PostgreSQL
+                create_table_query = """
+                CREATE TABLE vocabulary (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    greek TEXT NOT NULL,
+                    russian TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, greek, russian)
+                );
+                """
+            else:
+                # SQLite
+                create_table_query = """
+                CREATE TABLE vocabulary (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    greek TEXT NOT NULL,
+                    russian TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, greek, russian)
+                );
+                """
             cursor.execute(create_table_query)
         
         # Создаем таблицу статистики по словам для пользователей
-        create_stats_table_query = """
-        CREATE TABLE IF NOT EXISTS word_statistics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            word_id INTEGER NOT NULL,
-            successful INTEGER DEFAULT 0,
-            unsuccessful INTEGER DEFAULT 0,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(user_id, word_id),
-            FOREIGN KEY (word_id) REFERENCES vocabulary(id) ON DELETE CASCADE
-        );
-        """
+        if USE_POSTGRES:
+            create_stats_table_query = """
+            CREATE TABLE IF NOT EXISTS word_statistics (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                word_id INTEGER NOT NULL,
+                successful INTEGER DEFAULT 0,
+                unsuccessful INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, word_id),
+                FOREIGN KEY (word_id) REFERENCES vocabulary(id) ON DELETE CASCADE
+            );
+            """
+        else:
+            create_stats_table_query = """
+            CREATE TABLE IF NOT EXISTS word_statistics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                word_id INTEGER NOT NULL,
+                successful INTEGER DEFAULT 0,
+                unsuccessful INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, word_id),
+                FOREIGN KEY (word_id) REFERENCES vocabulary(id) ON DELETE CASCADE
+            );
+            """
         
         cursor.execute(create_stats_table_query)
         
         # Создаем единую таблицу пользователей
-        create_users_table_query = """
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            is_admin INTEGER DEFAULT 0,
-            is_tracked INTEGER DEFAULT 0,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            notes TEXT
-        );
-        """
+        if USE_POSTGRES:
+            create_users_table_query = """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                is_admin INTEGER DEFAULT 0,
+                is_tracked INTEGER DEFAULT 0,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT
+            );
+            """
+        else:
+            create_users_table_query = """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                is_admin INTEGER DEFAULT 0,
+                is_tracked INTEGER DEFAULT 0,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT
+            );
+            """
         
         cursor.execute(create_users_table_query)
         
