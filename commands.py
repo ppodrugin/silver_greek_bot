@@ -13,6 +13,32 @@ from user_state import get_user_state, get_user_stats, send_next_training_word
 
 logger = logging.getLogger(__name__)
 
+async def check_tracked_user(update: Update) -> bool:
+    """
+    Проверяет, является ли пользователь отслеживаемым.
+    Если нет - отправляет сообщение и возвращает False.
+    """
+    from database import is_tracked_user, is_superuser
+    
+    user_id = update.effective_user.id
+    
+    # Супер-пользователи всегда имеют доступ
+    if is_superuser(user_id):
+        return True
+    
+    # Проверяем, отслеживается ли пользователь
+    if not is_tracked_user(user_id):
+        message = (
+            "⚠️ Вы не зарегистрированы в системе.\n\n"
+            "Для использования бота необходимо обратиться к администратору "
+            "для добавления вас в список отслеживаемых пользователей.\n\n"
+            "Используйте команду /my_id чтобы узнать свой User ID и передать его администратору."
+        )
+        await update.message.reply_text(message)
+        return False
+    
+    return True
+
 # Ограничения
 MAX_WORDS_PER_BATCH = 100  # Максимальное количество слов за раз
 MAX_TEXT_LENGTH = 10000  # Максимальная длина текста
@@ -20,6 +46,9 @@ MAX_AUDIO_SIZE_MB = 20  # Максимальный размер аудио фа�
 
 async def handle_add_word_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /add_words"""
+    if not await check_tracked_user(update):
+        return
+    
     user_id = update.effective_user.id
     state = get_user_state(user_id)
     
@@ -171,6 +200,9 @@ async def handle_add_word(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
 async def handle_training_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /training"""
+    if not await check_tracked_user(update):
+        return
+    
     user_id = update.effective_user.id
     state = get_user_state(user_id)
     
@@ -200,6 +232,9 @@ async def handle_training_command(update: Update, context: ContextTypes.DEFAULT_
 
 async def handle_read_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /read_text"""
+    if not await check_tracked_user(update):
+        return
+    
     user_id = update.effective_user.id
     state = get_user_state(user_id)
     
@@ -215,6 +250,9 @@ async def handle_read_text_command(update: Update, context: ContextTypes.DEFAULT
 
 async def handle_ai_generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /ai_generate"""
+    if not await check_tracked_user(update):
+        return
+    
     user_id = update.effective_user.id
     state = get_user_state(user_id)
     

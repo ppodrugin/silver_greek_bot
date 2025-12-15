@@ -1,5 +1,6 @@
 """
 Работа с базой данных (SQLite для локальной разработки, PostgreSQL для продакшена)
+Унифицированный подход без различий между БД
 """
 import logging
 import os
@@ -12,7 +13,6 @@ USE_POSTGRES = bool(DATABASE_URL)
 
 # Логируем информацию о выборе БД
 if USE_POSTGRES:
-    # Используем PostgreSQL (для Render)
     logger.info(f"✅ Используется PostgreSQL (DATABASE_URL найден: {DATABASE_URL[:20]}...)")
     try:
         import psycopg2
@@ -54,12 +54,9 @@ if USE_POSTGRES:
     except ImportError:
         logger.error("❌ psycopg2 не установлен! Установите: pip install psycopg2-binary")
         USE_POSTGRES = False
-else:
-    logger.info("✅ Используется SQLite (DATABASE_URL не установлен)")
 
 if not USE_POSTGRES:
-    # Используем SQLite (для локальной разработки)
-    logger.info("Используется SQLite (локальная разработка)")
+    logger.info("✅ Используется SQLite (DATABASE_URL не установлен)")
     import sqlite3
     
     DB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -86,9 +83,58 @@ if not USE_POSTGRES:
             except Exception as e:
                 logger.error(f"Ошибка закрытия соединения SQLite: {e}", exc_info=True)
 
+# Универсальная функция для получения placeholder
+def get_param():
+    """Возвращает placeholder для параметров запроса"""
+    return '%s' if USE_POSTGRES else '?'
+
+# Универсальная функция для выполнения SQL из файла
+def execute_sql_file(conn, file_path):
+    """Выполняет SQL из файла, адаптируя под тип БД"""
+    try:
+        schema_dir = os.path.dirname(os.path.abspath(__file__))
+        full_path = os.path.join(schema_dir, file_path)
+        
+        with open(full_path, 'r', encoding='utf-8') as f:
+            sql = f.read()
+        
+        # Удаляем комментарии (строки начинающиеся с --)
+        lines = []
+        for line in sql.split('\n'):
+            # Убираем комментарии в конце строки
+            if '--' in line:
+                comment_pos = line.find('--')
+                line = line[:comment_pos]
+            lines.append(line.strip())
+        sql = '\n'.join(lines)
+        
+        # Адаптируем SQL под тип БД
+        if USE_POSTGRES:
+            # Заменяем AUTOINCREMENT на SERIAL PRIMARY KEY
+            sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
+            # Убираем AUTOINCREMENT если остался отдельно
+            sql = sql.replace('AUTOINCREMENT', '')
+        # Для SQLite оставляем как есть
+        
+        # Разбиваем на отдельные команды (разделитель - точка с запятой)
+        commands = [cmd.strip() for cmd in sql.split(';') if cmd.strip()]
+        
+        cursor = conn.cursor()
+        for command in commands:
+            if command:
+                cursor.execute(command)
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка выполнения SQL из файла: {e}", exc_info=True)
+        logger.error(f"Путь к файлу: {full_path if 'full_path' in locals() else file_path}")
+        return False
+
 def init_database():
-    """Инициализирует базу данных и создает таблицу если её нет"""
-    logger.info(f"🔍 Инициализация БД: USE_POSTGRES={USE_POSTGRES}, DATABASE_URL установлен={bool(os.getenv('DATABASE_URL'))}")
+    """Инициализирует базу данных, создавая таблицы если их еще нет"""
+    logger.info(f"🔍 Инициализация БД: USE_POSTGRES={USE_POSTGRES}")
+    
     try:
         conn = get_connection()
         if not conn:
@@ -97,316 +143,36 @@ def init_database():
         
         cursor = conn.cursor()
         
-        # Определяем тип БД и проверяем существование таблицы
-        logger.info(f"📊 Проверка таблиц: USE_POSTGRES={USE_POSTGRES}")
+        # Создаем таблицы по схеме из файла (если их еще нет)
+        logger.info("📋 Создание таблиц из schema.sql (если их еще нет)...")
+        schema_file = 'schema.sql'
+        if not execute_sql_file(conn, schema_file):
+            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось создать таблицы из schema.sql!")
+            logger.error("Файл schema.sql должен присутствовать в директории с database.py")
+            return False
+        
+        logger.info("✅ Таблицы и индексы созданы из schema.sql")
+        
+        # Добавляем первого супер-пользователя
+        from config import SUPERUSER_ID
+        
+        if not SUPERUSER_ID:
+            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: SUPERUSER_ID не установлен в переменных окружения!")
+            logger.error("Установите SUPERUSER_ID в .env файле или переменных окружения")
+            return False
+        
+        param = get_param()
         if USE_POSTGRES:
-            # PostgreSQL - проверяем через information_schema
-            cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'vocabulary');")
-            table_exists = cursor.fetchone()[0]
-        else:
-            # SQLite - проверяем через sqlite_master
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vocabulary';")
-            table_exists = cursor.fetchone()
-        
-        if table_exists and not USE_POSTGRES:
-            # Таблица существует - для SQLite проверяем структуру
-            cursor.execute("PRAGMA table_info(vocabulary);")
-            columns = {row[1]: row for row in cursor.fetchall()}
-            
-            # Проверяем, есть ли колонка user_id
-            if 'user_id' not in columns:
-                # Старая таблица без user_id - нужно мигрировать
-                logger.info("Обнаружена старая таблица vocabulary. Выполняем миграцию...")
-                
-                # ВАЖНО: Сохраняем статистику перед миграцией, чтобы не потерять данные
-                logger.info("Сохранение статистики перед миграцией...")
-                cursor.execute("""
-                    SELECT ws.user_id, v.id as word_id, ws.successful, ws.unsuccessful
-                    FROM word_statistics ws
-                    JOIN vocabulary v ON ws.word_id = v.id
-                """)
-                saved_stats = cursor.fetchall()
-                logger.info(f"Сохранено {len(saved_stats)} записей статистики")
-                
-                # Создаем временную таблицу с новой структурой
-                cursor.execute("""
-                CREATE TABLE vocabulary_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL DEFAULT 0,
-                    greek TEXT NOT NULL,
-                    russian TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, greek, russian)
-                );
-                """)
-                
-                # Копируем данные из старой таблицы
-                cursor.execute("""
-                INSERT INTO vocabulary_new (id, user_id, greek, russian, created_at)
-                SELECT id, 0, greek, russian, created_at FROM vocabulary;
-                """)
-                
-                # Временно отключаем внешний ключ для безопасного удаления таблицы
-                cursor.execute("PRAGMA foreign_keys = OFF;")
-                
-                # Удаляем старую таблицу
-                cursor.execute("DROP TABLE vocabulary;")
-                
-                # Переименовываем новую таблицу
-                cursor.execute("ALTER TABLE vocabulary_new RENAME TO vocabulary;")
-                
-                # Включаем внешний ключ обратно
-                cursor.execute("PRAGMA foreign_keys = ON;")
-                
-                # Восстанавливаем статистику после миграции
-                if saved_stats:
-                    logger.info("Восстановление статистики после миграции...")
-                    for stat_row in saved_stats:
-                        old_word_id = stat_row['word_id']
-                        user_id_stat = stat_row['user_id']
-                        successful = stat_row['successful']
-                        unsuccessful = stat_row['unsuccessful']
-                        
-                        # Находим новый ID слова по старому ID (они должны совпадать)
-                        cursor.execute("SELECT id FROM vocabulary WHERE id = ?", (old_word_id,))
-                        new_word_row = cursor.fetchone()
-                        if new_word_row:
-                            new_word_id = new_word_row['id']
-                            cursor.execute("""
-                                INSERT INTO word_statistics (user_id, word_id, successful, unsuccessful)
-                                VALUES (?, ?, ?, ?)
-                            """, (user_id_stat, new_word_id, successful, unsuccessful))
-                    logger.info(f"✅ Восстановлено {len(saved_stats)} записей статистики")
-                
-                # Коммитим изменения после миграции
-                conn.commit()
-                logger.info("✅ Миграция завершена")
-            else:
-                # Таблица уже имеет user_id - проверяем ограничение уникальности
-                cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='vocabulary';")
-                table_sql = cursor.fetchone()[0]
-                
-                # Если в SQL нет UNIQUE(user_id, greek, russian), нужно пересоздать таблицу
-                if 'UNIQUE(user_id, greek, russian)' not in table_sql and 'UNIQUE(user_id,greek,russian)' not in table_sql:
-                    logger.info("Обнаружено старое ограничение уникальности. Выполняем миграцию...")
-                    
-                    # ВАЖНО: Сохраняем статистику перед миграцией, чтобы не потерять данные
-                    logger.info("Сохранение статистики перед миграцией...")
-                    cursor.execute("""
-                        SELECT ws.user_id, v.id as word_id, ws.successful, ws.unsuccessful
-                        FROM word_statistics ws
-                        JOIN vocabulary v ON ws.word_id = v.id
-                    """)
-                    saved_stats = cursor.fetchall()
-                    logger.info(f"Сохранено {len(saved_stats)} записей статистики")
-                    
-                    # Создаем временную таблицу с правильным ограничением
-                    cursor.execute("""
-                    CREATE TABLE vocabulary_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER NOT NULL DEFAULT 0,
-                        greek TEXT NOT NULL,
-                        russian TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(user_id, greek, russian)
-                    );
-                    """)
-                    
-                    # Копируем данные
-                    cursor.execute("""
-                    INSERT OR IGNORE INTO vocabulary_new (id, user_id, greek, russian, created_at)
-                    SELECT id, COALESCE(user_id, 0), greek, russian, created_at FROM vocabulary;
-                    """)
-                    
-                    # Временно отключаем внешний ключ для безопасного удаления таблицы
-                    cursor.execute("PRAGMA foreign_keys = OFF;")
-                    
-                    # Удаляем старую таблицу
-                    cursor.execute("DROP TABLE vocabulary;")
-                    
-                    # Переименовываем новую таблицу
-                    cursor.execute("ALTER TABLE vocabulary_new RENAME TO vocabulary;")
-                    
-                    # Включаем внешний ключ обратно
-                    cursor.execute("PRAGMA foreign_keys = ON;")
-                    
-                    # Восстанавливаем статистику после миграции
-                    if saved_stats:
-                        logger.info("Восстановление статистики после миграции...")
-                        for stat_row in saved_stats:
-                            old_word_id = stat_row['word_id']
-                            user_id_stat = stat_row['user_id']
-                            successful = stat_row['successful']
-                            unsuccessful = stat_row['unsuccessful']
-                            
-                            # Находим новый ID слова по старому ID (они должны совпадать)
-                            cursor.execute("SELECT id FROM vocabulary WHERE id = ?", (old_word_id,))
-                            new_word_row = cursor.fetchone()
-                            if new_word_row:
-                                new_word_id = new_word_row['id']
-                                cursor.execute("""
-                                    INSERT INTO word_statistics (user_id, word_id, successful, unsuccessful)
-                                    VALUES (?, ?, ?, ?)
-                                """, (user_id_stat, new_word_id, successful, unsuccessful))
-                        logger.info(f"✅ Восстановлено {len(saved_stats)} записей статистики")
-                    
-                    # Коммитим изменения после миграции
-                    conn.commit()
-                    logger.info("✅ Миграция ограничения уникальности завершена")
-        elif not table_exists:
-            # Таблица не существует - создаем новую
-            if USE_POSTGRES:
-                # PostgreSQL
-                create_table_query = """
-                CREATE TABLE vocabulary (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL DEFAULT 0,
-                    greek TEXT NOT NULL,
-                    russian TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, greek, russian)
-                );
-                """
-            else:
-                # SQLite
-                create_table_query = """
-                CREATE TABLE vocabulary (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL DEFAULT 0,
-                    greek TEXT NOT NULL,
-                    russian TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, greek, russian)
-                );
-                """
-            cursor.execute(create_table_query)
-        
-        # Создаем таблицу статистики по словам для пользователей
-        # Проверяем существование таблицы
-        if USE_POSTGRES:
-            cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'word_statistics');")
-            stats_table_exists = cursor.fetchone()[0]
-            logger.info(f"Проверка таблицы word_statistics (PostgreSQL): существует={stats_table_exists}")
-        else:
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='word_statistics';")
-            stats_table_exists = cursor.fetchone()
-            logger.info(f"Проверка таблицы word_statistics (SQLite): существует={bool(stats_table_exists)}")
-        
-        if not stats_table_exists:
-            # Таблица не существует - создаем
-            if USE_POSTGRES:
-                create_stats_table_query = """
-                CREATE TABLE word_statistics (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    word_id INTEGER NOT NULL,
-                    successful INTEGER DEFAULT 0,
-                    unsuccessful INTEGER DEFAULT 0,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, word_id),
-                    FOREIGN KEY (word_id) REFERENCES vocabulary(id) ON DELETE CASCADE
-                );
-                """
-            else:
-                create_stats_table_query = """
-                CREATE TABLE word_statistics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    word_id INTEGER NOT NULL,
-                    successful INTEGER DEFAULT 0,
-                    unsuccessful INTEGER DEFAULT 0,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, word_id),
-                    FOREIGN KEY (word_id) REFERENCES vocabulary(id) ON DELETE CASCADE
-                );
-                """
-            
-            cursor.execute(create_stats_table_query)
-            logger.info(f"✅ Таблица word_statistics создана для {'PostgreSQL' if USE_POSTGRES else 'SQLite'}")
-        
-        # Создаем единую таблицу пользователей
-        if USE_POSTGRES:
-            create_users_table_query = """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                is_admin INTEGER DEFAULT 0,
-                is_tracked INTEGER DEFAULT 0,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                notes TEXT
-            );
-            """
-        else:
-            create_users_table_query = """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                is_admin INTEGER DEFAULT 0,
-                is_tracked INTEGER DEFAULT 0,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                notes TEXT
-            );
-            """
-        
-        cursor.execute(create_users_table_query)
-        
-        # Миграция данных из старых таблиц (только для SQLite)
-        if not USE_POSTGRES:
-            try:
-                # Проверяем существование старых таблиц
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='superusers'")
-                if cursor.fetchone():
-                    # Мигрируем супер-пользователей
-                    cursor.execute("SELECT user_id, username FROM superusers")
-                for row in cursor.fetchall():
-                    username = row['username'] if 'username' in row.keys() else None
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO users (user_id, username, is_admin, is_tracked)
-                        VALUES (?, ?, 1, 1)
-                    """, (row['user_id'], username))
-                    
-                    # Удаляем старую таблицу
-                    cursor.execute("DROP TABLE superusers")
-                
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracked_users'")
-                if cursor.fetchone():
-                    # Мигрируем отслеживаемых пользователей
-                    cursor.execute("SELECT user_id, username FROM tracked_users")
-                    for row in cursor.fetchall():
-                        username = row['username'] if 'username' in row.keys() else None
-                        cursor.execute("""
-                            INSERT OR REPLACE INTO users (user_id, username, is_admin, is_tracked)
-                            VALUES (?, ?, 
-                                COALESCE((SELECT is_admin FROM users WHERE user_id = ?), 0),
-                                1)
-                        """, (row['user_id'], username, row['user_id']))
-                    
-                    # Удаляем старую таблицу
-                    cursor.execute("DROP TABLE tracked_users")
-            except Exception as e:
-                logger.warning(f"Предупреждение при миграции: {e}", exc_info=True)
-        
-        # Добавляем первого супер-пользователя (владельца бота)
-        SUPERUSER_ID = 799341043
-        if USE_POSTGRES:
-            cursor.execute("""
+            cursor.execute(f"""
                 INSERT INTO users (user_id, is_admin, is_tracked)
-                VALUES (%s, 1, 1)
+                VALUES ({param}, 1, 1)
                 ON CONFLICT (user_id) DO NOTHING
             """, (SUPERUSER_ID,))
         else:
-            cursor.execute("""
+            cursor.execute(f"""
                 INSERT OR IGNORE INTO users (user_id, is_admin, is_tracked)
-                VALUES (?, 1, 1)
+                VALUES ({param}, 1, 1)
             """, (SUPERUSER_ID,))
-        
-        # Создаем индексы для быстрого поиска
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_word ON word_statistics(user_id, word_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_id ON word_statistics(word_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vocabulary_user_id ON vocabulary(user_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_is_admin ON users(is_admin);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_is_tracked ON users(is_tracked);")
         
         conn.commit()
         
@@ -417,6 +183,8 @@ def init_database():
         
     except Exception as e:
         logger.error(f"Ошибка при инициализации БД: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
         return False
     finally:
         if conn:
@@ -442,47 +210,43 @@ def add_user(user_id, username=None, is_admin=False, is_tracked=False, notes=Non
     
     try:
         cursor = conn.cursor()
+        param = get_param()
+        
         # Проверяем, существует ли пользователь
-        if USE_POSTGRES:
-            cursor.execute("SELECT is_admin, is_tracked FROM users WHERE user_id = %s", (user_id,))
-        else:
-            cursor.execute("SELECT is_admin, is_tracked FROM users WHERE user_id = ?", (user_id,))
+        cursor.execute(f"SELECT is_admin, is_tracked FROM users WHERE user_id = {param}", (user_id,))
         existing = cursor.fetchone()
         
         if existing:
             # Обновляем существующего пользователя
+            existing_admin = existing[0] if USE_POSTGRES else existing['is_admin']
+            existing_tracked = existing[1] if USE_POSTGRES else existing['is_tracked']
+            
             if USE_POSTGRES:
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE users 
-                    SET username = COALESCE(%s, username),
-                        is_admin = %s,
-                        is_tracked = %s,
-                        notes = COALESCE(%s, notes)
-                    WHERE user_id = %s
-                """, (username, 1 if is_admin else existing['is_admin'], 
-                      1 if is_tracked else existing['is_tracked'], notes, user_id))
+                    SET username = COALESCE({param}, username),
+                        is_admin = {param},
+                        is_tracked = {param},
+                        notes = COALESCE({param}, notes)
+                    WHERE user_id = {param}
+                """, (username, 1 if is_admin else existing_admin, 
+                      1 if is_tracked else existing_tracked, notes, user_id))
             else:
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE users 
-                    SET username = COALESCE(?, username),
-                        is_admin = ?,
-                        is_tracked = ?,
-                        notes = COALESCE(?, notes)
-                    WHERE user_id = ?
-                """, (username, 1 if is_admin else existing['is_admin'], 
-                      1 if is_tracked else existing['is_tracked'], notes, user_id))
+                    SET username = COALESCE({param}, username),
+                        is_admin = {param},
+                        is_tracked = {param},
+                        notes = COALESCE({param}, notes)
+                    WHERE user_id = {param}
+                """, (username, 1 if is_admin else existing_admin, 
+                      1 if is_tracked else existing_tracked, notes, user_id))
         else:
             # Добавляем нового пользователя
-            if USE_POSTGRES:
-                cursor.execute("""
-                    INSERT INTO users (user_id, username, is_admin, is_tracked, notes)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (user_id, username, 1 if is_admin else 0, 1 if is_tracked else 0, notes))
-            else:
-                cursor.execute("""
-                    INSERT INTO users (user_id, username, is_admin, is_tracked, notes)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (user_id, username, 1 if is_admin else 0, 1 if is_tracked else 0, notes))
+            cursor.execute(f"""
+                INSERT INTO users (user_id, username, is_admin, is_tracked, notes)
+                VALUES ({param}, {param}, {param}, {param}, {param})
+            """, (user_id, username, 1 if is_admin else 0, 1 if is_tracked else 0, notes))
         
         conn.commit()
         return True
@@ -510,8 +274,8 @@ def remove_user(user_id):
     
     try:
         cursor = conn.cursor()
-        # Убираем флаг отслеживания, но оставляем пользователя в БД
-        cursor.execute("UPDATE users SET is_tracked = 0 WHERE user_id = ?", (user_id,))
+        param = get_param()
+        cursor.execute(f"UPDATE users SET is_tracked = 0 WHERE user_id = {param}", (user_id,))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:
@@ -535,8 +299,7 @@ def get_tracked_users():
     
     try:
         cursor = conn.cursor()
-        query = "SELECT user_id FROM users WHERE is_tracked = 1"
-        cursor.execute(query)
+        cursor.execute("SELECT user_id FROM users WHERE is_tracked = 1")
         results = cursor.fetchall()
         if USE_POSTGRES:
             return {row[0] for row in results}
@@ -562,10 +325,12 @@ def get_tracked_users_with_info():
     
     try:
         cursor = conn.cursor()
-        query = "SELECT user_id, username FROM users WHERE is_tracked = 1 ORDER BY added_at DESC"
-        cursor.execute(query)
+        cursor.execute("SELECT user_id, username FROM users WHERE is_tracked = 1 ORDER BY added_at DESC")
         results = cursor.fetchall()
-        return [{'user_id': row['user_id'], 'username': row['username']} for row in results]
+        if USE_POSTGRES:
+            return [{'user_id': row[0], 'username': row[1]} for row in results]
+        else:
+            return [{'user_id': row['user_id'], 'username': row['username']} for row in results]
     except Exception as e:
         logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
         return []
@@ -589,11 +354,8 @@ def is_superuser(user_id):
     
     try:
         cursor = conn.cursor()
-        if USE_POSTGRES:
-            query = "SELECT 1 FROM users WHERE user_id = %s AND is_admin = 1 LIMIT 1"
-        else:
-            query = "SELECT 1 FROM users WHERE user_id = ? AND is_admin = 1 LIMIT 1"
-        cursor.execute(query, (user_id,))
+        param = get_param()
+        cursor.execute(f"SELECT 1 FROM users WHERE user_id = {param} AND is_admin = 1 LIMIT 1", (user_id,))
         return cursor.fetchone() is not None
     except Exception as e:
         logger.error(f"Ошибка при проверке супер-пользователя: {e}", exc_info=True)
@@ -618,8 +380,8 @@ def is_tracked_user(user_id):
     
     try:
         cursor = conn.cursor()
-        query = "SELECT 1 FROM users WHERE user_id = ? AND is_tracked = 1 LIMIT 1"
-        cursor.execute(query, (user_id,))
+        param = get_param()
+        cursor.execute(f"SELECT 1 FROM users WHERE user_id = {param} AND is_tracked = 1 LIMIT 1", (user_id,))
         return cursor.fetchone() is not None
     except Exception as e:
         logger.error(f"Ошибка при проверке пользователя: {e}", exc_info=True)
@@ -657,10 +419,8 @@ def remove_admin(user_id):
     
     try:
         cursor = conn.cursor()
-        if USE_POSTGRES:
-            cursor.execute("UPDATE users SET is_admin = 0 WHERE user_id = %s", (user_id,))
-        else:
-            cursor.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (user_id,))
+        param = get_param()
+        cursor.execute(f"UPDATE users SET is_admin = 0 WHERE user_id = {param}", (user_id,))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:

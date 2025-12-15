@@ -22,8 +22,61 @@ logger = logging.getLogger(__name__)
 # Время запуска бота
 BOT_START_TIME = datetime.now()
 
+def require_tracked_user(func):
+    """
+    Декоратор для проверки, является ли пользователь отслеживаемым.
+    Если нет - возвращает сообщение о необходимости обратиться к админу.
+    """
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        from database import is_tracked_user, is_superuser
+        
+        user_id = update.effective_user.id
+        
+        # Супер-пользователи всегда имеют доступ
+        if is_superuser(user_id):
+            return await func(update, context)
+        
+        # Проверяем, отслеживается ли пользователь
+        if not is_tracked_user(user_id):
+            message = (
+                "⚠️ Вы не зарегистрированы в системе.\n\n"
+                "Для использования бота необходимо обратиться к администратору "
+                "для добавления вас в список отслеживаемых пользователей.\n\n"
+                "Используйте команду /my_id чтобы узнать свой User ID и передать его администратору."
+            )
+            await update.message.reply_text(message)
+            return
+        
+        # Пользователь отслеживается - выполняем команду
+        return await func(update, context)
+    
+    return wrapper
+
+def require_admin(func):
+    """
+    Декоратор для проверки, является ли пользователь администратором.
+    Если нет - возвращает сообщение об отсутствии прав.
+    """
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        from database import is_superuser
+        
+        user_id = update.effective_user.id
+        
+        # Проверяем, является ли пользователь администратором
+        if not is_superuser(user_id):
+            await update.message.reply_text(
+                "❌ У вас нет прав для выполнения этой команды.\n\n"
+                "Только администраторы могут использовать эту команду."
+            )
+            return
+        
+        # Пользователь администратор - выполняем команду
+        return await func(update, context)
+    
+    return wrapper
+
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать свой user_id"""
+    """Показать свой user_id (доступно всем для получения ID для регистрации)"""
     from database import add_user as db_add_user, is_tracked_user
     
     user = update.effective_user
@@ -41,12 +94,19 @@ async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         message += "👤 Username: не установлен\n\n"
     
-    message += (
-        "💡 Для добавления в список отслеживаемых используйте:\n"
-        f"<code>/add_user {user_id}</code>\n\n"
-        "📝 Примечание: User ID - это число, которое не меняется. "
-        "Username (@имя) может меняться или отсутствовать."
-    )
+    if not is_tracked_user(user_id):
+        message += (
+            "⚠️ Вы не зарегистрированы в системе.\n\n"
+            "Для использования бота необходимо обратиться к администратору "
+            "для добавления вас в список отслеживаемых пользователей.\n\n"
+            "Передайте администратору ваш User ID, указанный выше."
+        )
+    else:
+        message += (
+            "✅ Вы зарегистрированы в системе.\n\n"
+            "📝 Примечание: User ID - это число, которое не меняется. "
+            "Username (@имя) может меняться или отсутствовать."
+        )
     
     await update.message.reply_text(message, parse_mode='HTML')
 
@@ -67,7 +127,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /read_text - Чтение текста
 /ai_generate - Генерация предложений с помощью ИИ
 /info - Показать информацию о версии и статистику
-/reset_stats - Сбросить статистику по словам (для отслеживаемых пользователей)
+/reset_stats - Сбросить статистику по словам
 /get_words - Экспортировать словарь в CSV
 /my_id - Показать свой User ID
 """
@@ -133,42 +193,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(help_text)
 
+@require_tracked_user
 async def reset_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Сбросить статистику по словам для пользователя"""
     from vocabulary import Vocabulary
-    from user_state import is_tracked_user
     
     user_id = update.effective_user.id
-    
-    # Проверяем, является ли пользователь отслеживаемым
-    if not is_tracked_user(user_id):
-        await update.message.reply_text(
-            "❌ Статистика по словам ведется только для пользователей из списка.\n"
-            "Ваша статистика не отслеживается."
-        )
-        return
     
     vocab = Vocabulary(user_id=user_id)
     deleted_count = vocab.reset_user_statistics(user_id)
     
     await update.message.reply_text(
         f"✅ Статистика по словам сброшена!\n\n"
-        f"Удалено записей: {deleted_count}\n\n"
+        f"Обновлено записей: {deleted_count}\n\n"
         f"Теперь все слова будут доступны для тренировки."
     )
 
+@require_admin
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Добавить пользователя в список отслеживаемых (только для администраторов)"""
-    from database import add_user as db_add_user, is_tracked_user, is_superuser
-    
-    # Проверяем права доступа
-    current_user_id = update.effective_user.id
-    if not is_superuser(current_user_id):
-        await update.message.reply_text(
-            "❌ У вас нет прав для выполнения этой команды.\n\n"
-            "Только супер-пользователи могут добавлять пользователей в список отслеживаемых."
-        )
-        return
+    from database import add_user as db_add_user, is_tracked_user
     
     # Проверяем, есть ли reply на сообщение пользователя
     username = None
@@ -230,18 +274,10 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Ошибка при добавлении пользователя {user_id}"
         )
 
+@require_admin
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Удалить пользователя из списка отслеживаемых (только для администраторов)"""
-    from database import remove_user as db_remove_user, is_tracked_user, is_superuser
-    
-    # Проверяем права доступа
-    current_user_id = update.effective_user.id
-    if not is_superuser(current_user_id):
-        await update.message.reply_text(
-            "❌ У вас нет прав для выполнения этой команды.\n\n"
-            "Только супер-пользователи могут удалять пользователей из списка отслеживаемых."
-        )
-        return
+    from database import remove_user as db_remove_user, is_tracked_user
     
     # Проверяем аргументы команды
     if not context.args:
@@ -277,8 +313,9 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Пример: /remove_user 123456789"
         )
 
+@require_admin
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать список отслеживаемых пользователей"""
+    """Показать список отслеживаемых пользователей (только для администраторов)"""
     from database import get_tracked_users_with_info, add_user as db_add_user
     
     users = get_tracked_users_with_info()
@@ -310,18 +347,10 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 Отслеживаемые пользователи ({len(users)}):\n\n" + "\n".join(users_list)
     )
 
+@require_admin
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Добавить пользователя в список администраторов (только для администраторов)"""
-    from database import add_admin as db_add_admin, is_superuser
-    
-    # Проверяем права доступа
-    current_user_id = update.effective_user.id
-    if not is_superuser(current_user_id):
-        await update.message.reply_text(
-            "❌ У вас нет прав для выполнения этой команды.\n\n"
-            "Только администраторы могут добавлять других администраторов."
-        )
-        return
+    from database import add_admin as db_add_admin
     
     # Проверяем аргументы команды
     if not context.args:
@@ -358,18 +387,12 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Или с username: /add_admin 123456789 username"
         )
 
+@require_admin
 async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Убрать права администратора у пользователя (только для администраторов)"""
-    from database import remove_admin as db_remove_admin, is_superuser
+    from database import remove_admin as db_remove_admin
     
-    # Проверяем права доступа
     current_user_id = update.effective_user.id
-    if not is_superuser(current_user_id):
-        await update.message.reply_text(
-            "❌ У вас нет прав для выполнения этой команды.\n\n"
-            "Только администраторы могут убирать права администратора."
-        )
-        return
     
     # Проверяем аргументы команды
     if not context.args:
@@ -435,6 +458,7 @@ def get_git_info():
         logger.warning(f"Не удалось получить информацию о Git: {e}")
         return None, None, None
 
+@require_tracked_user
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать информацию о версии бота и статистику"""
     from vocabulary import Vocabulary
@@ -501,6 +525,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(message, parse_mode='HTML')
 
+@require_tracked_user
 async def get_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Экспорт всех слов из словаря пользователя в формате CSV"""
     from vocabulary import Vocabulary
@@ -564,7 +589,21 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
+    from database import is_tracked_user, is_superuser
+    
     user_id = update.effective_user.id
+    
+    # Проверяем доступ (кроме супер-пользователей)
+    if not is_superuser(user_id) and not is_tracked_user(user_id):
+        message = (
+            "⚠️ Вы не зарегистрированы в системе.\n\n"
+            "Для использования бота необходимо обратиться к администратору "
+            "для добавления вас в список отслеживаемых пользователей.\n\n"
+            "Используйте команду /my_id чтобы узнать свой User ID и передать его администратору."
+        )
+        await update.message.reply_text(message)
+        return
+    
     state = get_user_state(user_id)
     text = update.message.text
     
@@ -592,7 +631,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик голосовых сообщений"""
+    from database import is_tracked_user, is_superuser
+    
     user_id = update.effective_user.id
+    
+    # Проверяем доступ (кроме супер-пользователей)
+    if not is_superuser(user_id) and not is_tracked_user(user_id):
+        message = (
+            "⚠️ Вы не зарегистрированы в системе.\n\n"
+            "Для использования бота необходимо обратиться к администратору "
+            "для добавления вас в список отслеживаемых пользователей.\n\n"
+            "Используйте команду /my_id чтобы узнать свой User ID и передать его администратору."
+        )
+        await update.message.reply_text(message)
+        return
+    
     state = get_user_state(user_id)
     
     current_mode = state.get('mode')
@@ -816,7 +869,6 @@ def main():
     from database import init_database
     if not init_database():
         logger.error("Не удалось инициализировать базу данных!")
-        logger.error("Проверьте права доступа к файлу vocabulary.db")
         return
     
     # Создаем приложение
@@ -851,9 +903,25 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     
+    # Добавляем обработчик ошибок
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик ошибок"""
+        logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+        
+        # Обрабатываем конфликт нескольких экземпляров бота
+        if isinstance(context.error, Exception) and "Conflict" in str(context.error):
+            logger.warning("⚠️ Обнаружен конфликт: запущено несколько экземпляров бота")
+            logger.warning("Убедитесь, что локальный бот остановлен, если используете Render")
+    
+    application.add_error_handler(error_handler)
+    
     # Запускаем бота
     logger.info("Бот запущен...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    except Exception as e:
+        logger.error(f"Критическая ошибка при запуске бота: {e}", exc_info=True)
+        raise
 
 if __name__ == '__main__':
     main()
