@@ -3,6 +3,8 @@ Telegram бот для тренировки греческого языка
 """
 import logging
 import os
+import subprocess
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.constants import ChatAction
@@ -16,6 +18,9 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Время запуска бота
+BOT_START_TIME = datetime.now()
 
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать свой user_id"""
@@ -108,22 +113,24 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 6️⃣ /get_words - Экспортировать все слова из словаря в формате CSV
 
-7️⃣ /reset_stats - Сбросить статистику по словам (только для отслеживаемых пользователей)
+7️⃣ /version - Показать информацию о версии бота (время запуска, коммит)
 
-8️⃣ /my_id - Показать свой User ID (для добавления в список отслеживаемых)
+8️⃣ /reset_stats - Сбросить статистику по словам (только для отслеживаемых пользователей)
+
+9️⃣ /my_id - Показать свой User ID (для добавления в список отслеживаемых)
 """
     
     # Команды управления пользователями только для администраторов
     if is_super:
         help_text += """
 --- Команды администратора ---
-9️⃣ /add_user - Добавить пользователя в список отслеживаемых
-🔟 /remove_user - Удалить пользователя из списка
-1️⃣1️⃣ /list_users - Показать список отслеживаемых пользователей
-1️⃣2️⃣ /add_admin - Назначить пользователя администратором
-1️⃣3️⃣ /remove_admin - Снять права администратора
+🔟 /add_user - Добавить пользователя в список отслеживаемых
+1️⃣1️⃣ /remove_user - Удалить пользователя из списка
+1️⃣2️⃣ /list_users - Показать список отслеживаемых пользователей
+1️⃣3️⃣ /add_admin - Назначить пользователя администратором
+1️⃣4️⃣ /remove_admin - Снять права администратора
 """
-    help_text += "\n1️⃣4️⃣ /cancel - Отменить текущую операцию"
+    help_text += "\n1️⃣5️⃣ /cancel - Отменить текущую операцию"
     
     await update.message.reply_text(help_text)
 
@@ -399,6 +406,58 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Неверный формат user_id. Должно быть число.\n\n"
             "Пример: /remove_admin 123456789"
         )
+
+def get_git_info():
+    """Получает информацию о последнем коммите из Git"""
+    try:
+        # Получаем хеш коммита (короткий)
+        commit_hash = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8').strip()
+        
+        # Получаем сообщение коммита
+        commit_message = subprocess.check_output(
+            ['git', 'log', '-1', '--pretty=format:%s'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8').strip()
+        
+        # Получаем дату коммита
+        commit_date = subprocess.check_output(
+            ['git', 'log', '-1', '--pretty=format:%ci'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8').strip()
+        
+        return commit_hash, commit_message, commit_date
+    except Exception as e:
+        logger.warning(f"Не удалось получить информацию о Git: {e}")
+        return None, None, None
+
+async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать информацию о версии бота"""
+    commit_hash, commit_message, commit_date = get_git_info()
+    
+    # Форматируем время запуска
+    start_time_str = BOT_START_TIME.strftime("%Y-%m-%d %H:%M:%S UTC")
+    
+    message = "📋 Информация о версии бота:\n\n"
+    message += f"🕐 Запущен: {start_time_str}\n"
+    
+    if commit_hash:
+        message += f"\n📝 Последний коммит:\n"
+        message += f"   Хеш: <code>{commit_hash}</code>\n"
+        if commit_date:
+            message += f"   Дата: {commit_date}\n"
+        if commit_message:
+            message += f"   Сообщение: {commit_message}\n"
+    else:
+        message += "\n⚠️ Информация о коммите недоступна\n"
+        message += "(возможно, бот запущен не из Git репозитория)"
+    
+    await update.message.reply_text(message, parse_mode='HTML')
 
 async def get_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Экспорт всех слов из словаря пользователя в формате CSV"""
@@ -771,6 +830,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("get_words", get_words))
+    application.add_handler(CommandHandler("version", version_command))
     application.add_handler(CommandHandler("reset_stats", reset_stats))
     application.add_handler(CommandHandler("my_id", my_id))
     application.add_handler(CommandHandler("add_user", add_user))
