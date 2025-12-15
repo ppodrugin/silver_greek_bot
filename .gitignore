@@ -9,6 +9,8 @@ __pycache__/
 # База данных SQLite
 vocabulary.db
 vocabulary.db-journal
+vocabulary.db-shm
+vocabulary.db-wal
 
 # Старый файл словаря (если был)
 vocabulary.txt

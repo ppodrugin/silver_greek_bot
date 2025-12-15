@@ -106,30 +106,24 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 5️⃣ /stats - Показать статистику тренировок
 
-6️⃣ /reset_stats - Сбросить статистику по словам (только для отслеживаемых пользователей)
+6️⃣ /get_words - Экспортировать все слова из словаря в формате CSV
 
-7️⃣ /my_id - Показать свой User ID (для добавления в список отслеживаемых)
+7️⃣ /reset_stats - Сбросить статистику по словам (только для отслеживаемых пользователей)
+
+8️⃣ /my_id - Показать свой User ID (для добавления в список отслеживаемых)
 """
     
     # Команды управления пользователями только для администраторов
     if is_super:
         help_text += """
-8️⃣ /add_user - Добавить пользователя в список отслеживаемых
-
-9️⃣ /remove_user - Удалить пользователя из списка
-
-🔟 /list_users - Показать список отслеживаемых пользователей
-
-1️⃣1️⃣ /add_admin - Добавить администратора
-
-1️⃣2️⃣ /remove_admin - Убрать права администратора
-
-1️⃣3️⃣ /cancel - Отменить текущую операцию
+--- Команды администратора ---
+9️⃣ /add_user - Добавить пользователя в список отслеживаемых
+🔟 /remove_user - Удалить пользователя из списка
+1️⃣1️⃣ /list_users - Показать список отслеживаемых пользователей
+1️⃣2️⃣ /add_admin - Назначить пользователя администратором
+1️⃣3️⃣ /remove_admin - Снять права администратора
 """
-    else:
-        help_text += """
-8️⃣ /cancel - Отменить текущую операцию
-"""
+    help_text += "\n1️⃣4️⃣ /cancel - Отменить текущую операцию"
     
     await update.message.reply_text(help_text)
 
@@ -405,6 +399,58 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Неверный формат user_id. Должно быть число.\n\n"
             "Пример: /remove_admin 123456789"
         )
+
+async def get_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Экспорт всех слов из словаря пользователя в формате CSV"""
+    from vocabulary import Vocabulary
+    
+    user_id = update.effective_user.id
+    vocab = Vocabulary(user_id=user_id)
+    
+    # Получаем все слова
+    words = vocab.get_all_words()
+    
+    if not words:
+        await update.message.reply_text(
+            "❌ Ваш словарь пуст! Добавьте слова командой /add_words"
+        )
+        return
+    
+    # Формируем CSV формат: слово,перевод
+    csv_lines = []
+    for greek, russian in words:
+        # Экранируем запятые и кавычки в CSV
+        greek_escaped = greek.replace('"', '""')
+        russian_escaped = russian.replace('"', '""')
+        # Если есть запятая или кавычка, оборачиваем в кавычки
+        if ',' in greek or '"' in greek or ',' in russian or '"' in russian:
+            csv_lines.append(f'"{greek_escaped}","{russian_escaped}"')
+        else:
+            csv_lines.append(f"{greek},{russian}")
+    
+    csv_content = "\n".join(csv_lines)
+    
+    # Telegram имеет ограничение на длину сообщения (4096 символов)
+    # Если словарь большой, отправляем файлом
+    if len(csv_content) > 4000:
+        # Отправляем как документ
+        from io import BytesIO
+        file_buffer = BytesIO(csv_content.encode('utf-8'))
+        file_buffer.name = 'vocabulary.csv'
+        
+        await update.message.reply_document(
+            document=file_buffer,
+            filename='vocabulary.csv',
+            caption=f"📚 Ваш словарь ({len(words)} слов)"
+        )
+    else:
+        # Отправляем как текст
+        message = f"📚 Ваш словарь ({len(words)} слов):\n\n"
+        message += "```csv\n"
+        message += csv_content
+        message += "\n```"
+        
+        await update.message.reply_text(message, parse_mode='Markdown')
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать статистику пользователя"""
@@ -724,6 +770,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("get_words", get_words))
     application.add_handler(CommandHandler("reset_stats", reset_stats))
     application.add_handler(CommandHandler("my_id", my_id))
     application.add_handler(CommandHandler("add_user", add_user))
