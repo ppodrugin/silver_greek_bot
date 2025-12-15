@@ -90,21 +90,25 @@ def init_database():
         
         cursor = conn.cursor()
         
-        # Проверяем, существует ли таблица и какая у неё структура
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vocabulary';")
-        table_exists = cursor.fetchone()
+        # Определяем тип БД и проверяем существование таблицы
+        if USE_POSTGRES:
+            # PostgreSQL - проверяем через information_schema
+            cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'vocabulary');")
+            table_exists = cursor.fetchone()[0]
+        else:
+            # SQLite - проверяем через sqlite_master
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vocabulary';")
+            table_exists = cursor.fetchone()
         
-        if table_exists:
-            # Таблица существует - для PostgreSQL просто пропускаем миграцию
-            # Для SQLite проверяем структуру
-            if not USE_POSTGRES:
-                cursor.execute("PRAGMA table_info(vocabulary);")
-                columns = {row[1]: row for row in cursor.fetchall()}
-                
-                # Проверяем, есть ли колонка user_id
-                if 'user_id' not in columns:
-                    # Старая таблица без user_id - нужно мигрировать
-                    logger.info("Обнаружена старая таблица vocabulary. Выполняем миграцию...")
+        if table_exists and not USE_POSTGRES:
+            # Таблица существует - для SQLite проверяем структуру
+            cursor.execute("PRAGMA table_info(vocabulary);")
+            columns = {row[1]: row for row in cursor.fetchall()}
+            
+            # Проверяем, есть ли колонка user_id
+            if 'user_id' not in columns:
+                # Старая таблица без user_id - нужно мигрировать
+                logger.info("Обнаружена старая таблица vocabulary. Выполняем миграцию...")
                 
                 # Создаем временную таблицу с новой структурой
                 cursor.execute("""
@@ -247,10 +251,17 @@ def init_database():
         
         # Добавляем первого супер-пользователя (владельца бота)
         SUPERUSER_ID = 799341043
-        cursor.execute("""
-            INSERT OR IGNORE INTO users (user_id, is_admin, is_tracked)
-            VALUES (?, 1, 1)
-        """, (SUPERUSER_ID,))
+        if USE_POSTGRES:
+            cursor.execute("""
+                INSERT INTO users (user_id, is_admin, is_tracked)
+                VALUES (%s, 1, 1)
+                ON CONFLICT (user_id) DO NOTHING
+            """, (SUPERUSER_ID,))
+        else:
+            cursor.execute("""
+                INSERT OR IGNORE INTO users (user_id, is_admin, is_tracked)
+                VALUES (?, 1, 1)
+            """, (SUPERUSER_ID,))
         
         # Создаем индексы для быстрого поиска
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_word ON word_statistics(user_id, word_id);")
@@ -295,26 +306,46 @@ def add_user(user_id, username=None, is_admin=False, is_tracked=False, notes=Non
     try:
         cursor = conn.cursor()
         # Проверяем, существует ли пользователь
-        cursor.execute("SELECT is_admin, is_tracked FROM users WHERE user_id = ?", (user_id,))
+        if USE_POSTGRES:
+            cursor.execute("SELECT is_admin, is_tracked FROM users WHERE user_id = %s", (user_id,))
+        else:
+            cursor.execute("SELECT is_admin, is_tracked FROM users WHERE user_id = ?", (user_id,))
         existing = cursor.fetchone()
         
         if existing:
             # Обновляем существующего пользователя
-            cursor.execute("""
-                UPDATE users 
-                SET username = COALESCE(?, username),
-                    is_admin = ?,
-                    is_tracked = ?,
-                    notes = COALESCE(?, notes)
-                WHERE user_id = ?
-            """, (username, 1 if is_admin else existing['is_admin'], 
-                  1 if is_tracked else existing['is_tracked'], notes, user_id))
+            if USE_POSTGRES:
+                cursor.execute("""
+                    UPDATE users 
+                    SET username = COALESCE(%s, username),
+                        is_admin = %s,
+                        is_tracked = %s,
+                        notes = COALESCE(%s, notes)
+                    WHERE user_id = %s
+                """, (username, 1 if is_admin else existing['is_admin'], 
+                      1 if is_tracked else existing['is_tracked'], notes, user_id))
+            else:
+                cursor.execute("""
+                    UPDATE users 
+                    SET username = COALESCE(?, username),
+                        is_admin = ?,
+                        is_tracked = ?,
+                        notes = COALESCE(?, notes)
+                    WHERE user_id = ?
+                """, (username, 1 if is_admin else existing['is_admin'], 
+                      1 if is_tracked else existing['is_tracked'], notes, user_id))
         else:
             # Добавляем нового пользователя
-            cursor.execute("""
-                INSERT INTO users (user_id, username, is_admin, is_tracked, notes)
-                VALUES (?, ?, ?, ?, ?)
-            """, (user_id, username, 1 if is_admin else 0, 1 if is_tracked else 0, notes))
+            if USE_POSTGRES:
+                cursor.execute("""
+                    INSERT INTO users (user_id, username, is_admin, is_tracked, notes)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (user_id, username, 1 if is_admin else 0, 1 if is_tracked else 0, notes))
+            else:
+                cursor.execute("""
+                    INSERT INTO users (user_id, username, is_admin, is_tracked, notes)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (user_id, username, 1 if is_admin else 0, 1 if is_tracked else 0, notes))
         
         conn.commit()
         return True
@@ -324,7 +355,7 @@ def add_user(user_id, username=None, is_admin=False, is_tracked=False, notes=Non
         return False
     finally:
         if conn:
-            conn.close()
+            return_connection(conn)
 
 def remove_user(user_id):
     """
@@ -352,7 +383,7 @@ def remove_user(user_id):
         return False
     finally:
         if conn:
-            conn.close()
+            return_connection(conn)
 
 def get_tracked_users():
     """
@@ -370,13 +401,16 @@ def get_tracked_users():
         query = "SELECT user_id FROM users WHERE is_tracked = 1"
         cursor.execute(query)
         results = cursor.fetchall()
-        return {row['user_id'] for row in results}
+        if USE_POSTGRES:
+            return {row[0] for row in results}
+        else:
+            return {row['user_id'] for row in results}
     except Exception as e:
         logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
         return set()
     finally:
         if conn:
-            conn.close()
+            return_connection(conn)
 
 def get_tracked_users_with_info():
     """
@@ -400,7 +434,7 @@ def get_tracked_users_with_info():
         return []
     finally:
         if conn:
-            conn.close()
+            return_connection(conn)
 
 def is_superuser(user_id):
     """
@@ -418,7 +452,10 @@ def is_superuser(user_id):
     
     try:
         cursor = conn.cursor()
-        query = "SELECT 1 FROM users WHERE user_id = ? AND is_admin = 1 LIMIT 1"
+        if USE_POSTGRES:
+            query = "SELECT 1 FROM users WHERE user_id = %s AND is_admin = 1 LIMIT 1"
+        else:
+            query = "SELECT 1 FROM users WHERE user_id = ? AND is_admin = 1 LIMIT 1"
         cursor.execute(query, (user_id,))
         return cursor.fetchone() is not None
     except Exception as e:
@@ -426,7 +463,7 @@ def is_superuser(user_id):
         return False
     finally:
         if conn:
-            conn.close()
+            return_connection(conn)
 
 def is_tracked_user(user_id):
     """
@@ -452,7 +489,7 @@ def is_tracked_user(user_id):
         return False
     finally:
         if conn:
-            conn.close()
+            return_connection(conn)
 
 def add_admin(user_id, username=None):
     """
@@ -483,7 +520,10 @@ def remove_admin(user_id):
     
     try:
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (user_id,))
+        if USE_POSTGRES:
+            cursor.execute("UPDATE users SET is_admin = 0 WHERE user_id = %s", (user_id,))
+        else:
+            cursor.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (user_id,))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:
@@ -492,7 +532,7 @@ def remove_admin(user_id):
         return False
     finally:
         if conn:
-            conn.close()
+            return_connection(conn)
 
 # Алиасы для обратной совместимости
 def add_tracked_user(user_id, username=None, notes=None):

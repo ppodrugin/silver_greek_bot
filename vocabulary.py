@@ -1,9 +1,18 @@
 """
-Работа со словарем через SQLite
+Работа со словарем через SQLite/PostgreSQL
 """
 import logging
 import random
-from database import get_connection
+import os
+from database import get_connection, return_connection
+
+# Определяем тип БД
+USE_POSTGRES = bool(os.getenv('DATABASE_URL'))
+
+# Вспомогательная функция для параметров запроса
+def get_param_placeholder():
+    """Возвращает placeholder для параметров запроса в зависимости от типа БД"""
+    return '%s' if USE_POSTGRES else '?'
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +50,16 @@ class Vocabulary:
             cursor = conn.cursor()
             
             # Проверяем, существует ли уже такое слово у этого пользователя
-            check_query = "SELECT id FROM vocabulary WHERE user_id = ? AND greek = ? AND russian = ?"
+            param = get_param_placeholder()
+            check_query = f"SELECT id FROM vocabulary WHERE user_id = {param} AND greek = {param} AND russian = {param}"
             cursor.execute(check_query, (self.user_id, greek, russian))
             
-            if cursor.fetchone():
+            result = cursor.fetchone()
+            if result:
                 return False  # Слово уже существует
             
             # Добавляем слово
-            insert_query = "INSERT INTO vocabulary (user_id, greek, russian) VALUES (?, ?, ?)"
+            insert_query = f"INSERT INTO vocabulary (user_id, greek, russian) VALUES ({param}, {param}, {param})"
             cursor.execute(insert_query, (self.user_id, greek, russian))
             conn.commit()
             
@@ -60,7 +71,7 @@ class Vocabulary:
             return False
         finally:
             if conn:
-                conn.close()
+                return_connection(conn)
     
     def add_words_batch(self, words):
         """
@@ -109,14 +120,16 @@ class Vocabulary:
             if len(valid_words) == 1:
                 # Для одного слова используем простой запрос
                 greek, russian = valid_words[0]
-                check_query = "SELECT 1 FROM vocabulary WHERE user_id = ? AND greek = ? AND russian = ?"
+                param = get_param_placeholder()
+                check_query = f"SELECT 1 FROM vocabulary WHERE user_id = {param} AND greek = {param} AND russian = {param}"
                 cursor.execute(check_query, (self.user_id, greek, russian))
                 existing_words = set() if cursor.fetchone() else set()
             else:
                 # Для множества слов проверяем каждое, но используем executemany для вставки
                 existing_words = set()
+                param = get_param_placeholder()
                 for greek, russian in valid_words:
-                    check_query = "SELECT 1 FROM vocabulary WHERE user_id = ? AND greek = ? AND russian = ?"
+                    check_query = f"SELECT 1 FROM vocabulary WHERE user_id = {param} AND greek = {param} AND russian = {param}"
                     cursor.execute(check_query, (self.user_id, greek, russian))
                     if cursor.fetchone():
                         existing_words.add((greek, russian))
@@ -127,7 +140,8 @@ class Vocabulary:
                              if (greek, russian) not in existing_words]
             
             if words_to_insert:
-                insert_query = "INSERT INTO vocabulary (user_id, greek, russian) VALUES (?, ?, ?)"
+                param = get_param_placeholder()
+                insert_query = f"INSERT INTO vocabulary (user_id, greek, russian) VALUES ({param}, {param}, {param})"
                 cursor.executemany(insert_query, words_to_insert)
                 added = len(words_to_insert)
             
@@ -139,7 +153,7 @@ class Vocabulary:
             conn.rollback()
         finally:
             if conn:
-                conn.close()
+                return_connection(conn)
         
         return (added, skipped)
     
@@ -165,10 +179,14 @@ class Vocabulary:
             cursor = conn.cursor()
             
             # Сначала проверяем, есть ли вообще слова у пользователя
-            count_query = "SELECT COUNT(*) as count FROM vocabulary WHERE user_id = ?"
+            param = get_param_placeholder()
+            count_query = f"SELECT COUNT(*) as count FROM vocabulary WHERE user_id = {param}"
             cursor.execute(count_query, (self.user_id,))
             count_result = cursor.fetchone()
-            total_words = count_result['count'] if count_result else 0
+            if USE_POSTGRES:
+                total_words = count_result[0] if count_result else 0
+            else:
+                total_words = count_result['count'] if count_result else 0
             
             logger.debug(f"Всего слов для user_id={self.user_id}: {total_words}")
             
@@ -179,11 +197,12 @@ class Vocabulary:
             # Если stats_user_id указан (для отслеживаемых пользователей), фильтруем слова по статистике
             if stats_user_id:
                 # Выбираем только слова пользователя, где (successful - unsuccessful) < 3
-                query = """
+                param = get_param_placeholder()
+                query = f"""
                 SELECT v.greek, v.russian 
                 FROM vocabulary v
-                LEFT JOIN word_statistics ws ON v.id = ws.word_id AND ws.user_id = ?
-                WHERE v.user_id = ? 
+                LEFT JOIN word_statistics ws ON v.id = ws.word_id AND ws.user_id = {param}
+                WHERE v.user_id = {param} 
                 AND (COALESCE(ws.successful, 0) - COALESCE(ws.unsuccessful, 0) < 3)
                 ORDER BY RANDOM() 
                 LIMIT 1
@@ -192,30 +211,44 @@ class Vocabulary:
                 result = cursor.fetchone()
                 
                 if result:
-                    logger.debug(f"Найдено слово по статистике: {result['greek']}")
-                    return (result['greek'], result['russian'])
+                    if USE_POSTGRES:
+                        logger.debug(f"Найдено слово по статистике: {result[0]}")
+                        return (result[0], result[1])
+                    else:
+                        logger.debug(f"Найдено слово по статистике: {result['greek']}")
+                        return (result['greek'], result['russian'])
                 
                 # Если для отслеживаемого пользователя не нашлось подходящих слов по статистике,
                 # возвращаем любое случайное из его словаря (fallback)
                 logger.debug(f"Не найдено слов с (successful - unsuccessful) < 3 для user_id={self.user_id}, используем fallback")
-                fallback_query = "SELECT greek, russian FROM vocabulary WHERE user_id = ? ORDER BY RANDOM() LIMIT 1"
+                param = get_param_placeholder()
+                fallback_query = f"SELECT greek, russian FROM vocabulary WHERE user_id = {param} ORDER BY RANDOM() LIMIT 1"
                 cursor.execute(fallback_query, (self.user_id,))
                 result = cursor.fetchone()
                 if result:
-                    logger.debug(f"Fallback: найдено слово {result['greek']}")
-                    return (result['greek'], result['russian'])
+                    if USE_POSTGRES:
+                        logger.debug(f"Fallback: найдено слово {result[0]}")
+                        return (result[0], result[1])
+                    else:
+                        logger.debug(f"Fallback: найдено слово {result['greek']}")
+                        return (result['greek'], result['russian'])
                 else:
                     logger.error(f"Fallback тоже не нашел слов для user_id={self.user_id}, хотя count показал {total_words}")
                     return None
             else:
                 # Обычный случайный выбор из словаря пользователя
-                query = "SELECT greek, russian FROM vocabulary WHERE user_id = ? ORDER BY RANDOM() LIMIT 1"
+                param = get_param_placeholder()
+                query = f"SELECT greek, russian FROM vocabulary WHERE user_id = {param} ORDER BY RANDOM() LIMIT 1"
                 cursor.execute(query, (self.user_id,))
                 result = cursor.fetchone()
                 
                 if result:
-                    logger.debug(f"Найдено случайное слово: {result['greek']}")
-                    return (result['greek'], result['russian'])
+                    if USE_POSTGRES:
+                        logger.debug(f"Найдено случайное слово: {result[0]}")
+                        return (result[0], result[1])
+                    else:
+                        logger.debug(f"Найдено случайное слово: {result['greek']}")
+                        return (result['greek'], result['russian'])
                 else:
                     logger.error(f"Не найдено слов для user_id={self.user_id}, хотя count показал {total_words}")
                     return None
@@ -225,7 +258,7 @@ class Vocabulary:
             return None
         finally:
             if conn:
-                conn.close()
+                return_connection(conn)
     
     def record_word_result(self, stats_user_id, greek, russian, is_successful):
         """
@@ -248,46 +281,47 @@ class Vocabulary:
             cursor = conn.cursor()
             
             # Находим ID слова в словаре пользователя
-            word_query = "SELECT id FROM vocabulary WHERE user_id = ? AND greek = ? AND russian = ?"
+            param = get_param_placeholder()
+            word_query = f"SELECT id FROM vocabulary WHERE user_id = {param} AND greek = {param} AND russian = {param}"
             cursor.execute(word_query, (self.user_id, greek, russian))
             word_row = cursor.fetchone()
             
             if not word_row:
                 return  # Слово не найдено в словаре пользователя
             
-            word_id = word_row['id']
+            word_id = word_row[0] if USE_POSTGRES else word_row['id']
             
             # Проверяем, есть ли уже статистика для этого слова и пользователя
-            check_query = "SELECT id, successful, unsuccessful FROM word_statistics WHERE user_id = ? AND word_id = ?"
+            check_query = f"SELECT id, successful, unsuccessful FROM word_statistics WHERE user_id = {param} AND word_id = {param}"
             cursor.execute(check_query, (stats_user_id, word_id))
             stats_row = cursor.fetchone()
             
             if stats_row:
                 # Обновляем существующую статистику
                 if is_successful:
-                    update_query = """
+                    update_query = f"""
                     UPDATE word_statistics 
                     SET successful = successful + 1, updated_at = CURRENT_TIMESTAMP
-                    WHERE user_id = ? AND word_id = ?
+                    WHERE user_id = {param} AND word_id = {param}
                     """
                 else:
-                    update_query = """
+                    update_query = f"""
                     UPDATE word_statistics 
                     SET unsuccessful = unsuccessful + 1, updated_at = CURRENT_TIMESTAMP
-                    WHERE user_id = ? AND word_id = ?
+                    WHERE user_id = {param} AND word_id = {param}
                     """
                 cursor.execute(update_query, (stats_user_id, word_id))
             else:
                 # Создаем новую запись статистики
                 if is_successful:
-                    insert_query = """
+                    insert_query = f"""
                     INSERT INTO word_statistics (user_id, word_id, successful, unsuccessful)
-                    VALUES (?, ?, 1, 0)
+                    VALUES ({param}, {param}, 1, 0)
                     """
                 else:
-                    insert_query = """
+                    insert_query = f"""
                     INSERT INTO word_statistics (user_id, word_id, successful, unsuccessful)
-                    VALUES (?, ?, 0, 1)
+                    VALUES ({param}, {param}, 0, 1)
                     """
                 cursor.execute(insert_query, (stats_user_id, word_id))
             
@@ -298,7 +332,7 @@ class Vocabulary:
             conn.rollback()
         finally:
             if conn:
-                conn.close()
+                return_connection(conn)
     
     def reset_user_statistics(self, user_id):
         """
@@ -316,7 +350,8 @@ class Vocabulary:
         
         try:
             cursor = conn.cursor()
-            delete_query = "DELETE FROM word_statistics WHERE user_id = ?"
+            param = get_param_placeholder()
+            delete_query = f"DELETE FROM word_statistics WHERE user_id = {param}"
             cursor.execute(delete_query, (user_id,))
             deleted_count = cursor.rowcount
             conn.commit()
@@ -327,7 +362,7 @@ class Vocabulary:
             return 0
         finally:
             if conn:
-                conn.close()
+                return_connection(conn)
     
     def get_all_words(self):
         """Возвращает все слова из словаря пользователя"""
@@ -340,18 +375,24 @@ class Vocabulary:
         
         try:
             cursor = conn.cursor()
-            query = "SELECT greek, russian FROM vocabulary WHERE user_id = ?"
+            if USE_POSTGRES:
+                query = "SELECT greek, russian FROM vocabulary WHERE user_id = %s"
+            else:
+                query = "SELECT greek, russian FROM vocabulary WHERE user_id = ?"
             cursor.execute(query, (self.user_id,))
             results = cursor.fetchall()
             
-            return [(row['greek'], row['russian']) for row in results]
+            if USE_POSTGRES:
+                return [(row[0], row[1]) for row in results]
+            else:
+                return [(row['greek'], row['russian']) for row in results]
             
         except Exception as e:
             logger.error(f"Ошибка при получении всех слов: {e}", exc_info=True)
             return []
         finally:
             if conn:
-                conn.close()
+                return_connection(conn)
     
     def count(self):
         """Возвращает количество слов в словаре пользователя"""
@@ -364,18 +405,22 @@ class Vocabulary:
         
         try:
             cursor = conn.cursor()
-            query = "SELECT COUNT(*) as count FROM vocabulary WHERE user_id = ?"
+            param = get_param_placeholder()
+            query = f"SELECT COUNT(*) as count FROM vocabulary WHERE user_id = {param}"
             cursor.execute(query, (self.user_id,))
             result = cursor.fetchone()
             
-            return result['count'] if result else 0
+            if USE_POSTGRES:
+                return result[0] if result else 0
+            else:
+                return result['count'] if result else 0
             
         except Exception as e:
             logger.error(f"Ошибка при подсчете слов: {e}", exc_info=True)
             return 0
         finally:
             if conn:
-                conn.close()
+                return_connection(conn)
     
     # Методы для совместимости со старым кодом
     def add_word_csv(self, greek, russian):
