@@ -598,6 +598,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = get_user_state(user_id)
     
+    logger.debug(f"handle_voice: user_id={user_id}, mode={state.get('mode')}, data={state.get('data')}")
+    
     if state['mode'] == 'training':
         await handle_training_voice(update, context)
     elif state['mode'] == 'read_text':

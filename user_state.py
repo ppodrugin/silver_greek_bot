@@ -43,6 +43,14 @@ async def send_next_training_word(update, context):
     logger = logging.getLogger(__name__)
     
     user_id = update.effective_user.id
+    state = get_user_state(user_id)
+    logger.debug(f"send_next_training_word: user_id={user_id}, mode={state.get('mode')}")
+    
+    # Убеждаемся, что режим установлен
+    if state.get('mode') != 'training':
+        logger.warning(f"Режим не установлен! Устанавливаем mode='training' для user_id={user_id}")
+        state['mode'] = 'training'
+    
     vocab = Vocabulary(user_id=user_id)
     
     # Проверяем количество слов перед выбором

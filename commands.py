@@ -184,6 +184,8 @@ async def handle_training_command(update: Update, context: ContextTypes.DEFAULT_
     state['mode'] = 'training'
     state['data'] = {}
     
+    logger.info(f"Тренировка начата для user_id={user_id}, mode={state['mode']}")
+    
     await update.message.reply_text(
         "🎯 Тренировка слов начата!\n\n"
         "Бот будет показывать слова на русском.\n"
