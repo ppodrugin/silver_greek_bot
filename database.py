@@ -7,11 +7,13 @@ import os
 logger = logging.getLogger(__name__)
 
 # Определяем, какую БД использовать
-USE_POSTGRES = bool(os.getenv('DATABASE_URL'))
+DATABASE_URL = os.getenv('DATABASE_URL')
+USE_POSTGRES = bool(DATABASE_URL)
 
+# Логируем информацию о выборе БД
 if USE_POSTGRES:
     # Используем PostgreSQL (для Render)
-    logger.info("Используется PostgreSQL (DATABASE_URL найден)")
+    logger.info(f"✅ Используется PostgreSQL (DATABASE_URL найден: {DATABASE_URL[:20]}...)")
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
@@ -27,17 +29,18 @@ if USE_POSTGRES:
             if connection_pool is None:
                 try:
                     db_url = os.getenv('DATABASE_URL')
+                    logger.info(f"🔗 Подключение к PostgreSQL: {db_url[:30]}...")
                     connection_pool = ThreadedConnectionPool(1, 5, db_url)
                     logger.info("✅ Пул соединений PostgreSQL создан")
                 except Exception as e:
-                    logger.error(f"Ошибка создания пула соединений PostgreSQL: {e}", exc_info=True)
+                    logger.error(f"❌ Ошибка создания пула соединений PostgreSQL: {e}", exc_info=True)
                     return None
             
             try:
                 conn = connection_pool.getconn()
                 return conn
             except Exception as e:
-                logger.error(f"Ошибка получения соединения из пула: {e}", exc_info=True)
+                logger.error(f"❌ Ошибка получения соединения из пула: {e}", exc_info=True)
                 return None
         
         def return_connection(conn):
@@ -49,8 +52,10 @@ if USE_POSTGRES:
                 except Exception as e:
                     logger.error(f"Ошибка возврата соединения в пул: {e}", exc_info=True)
     except ImportError:
-        logger.error("psycopg2 не установлен! Установите: pip install psycopg2-binary")
+        logger.error("❌ psycopg2 не установлен! Установите: pip install psycopg2-binary")
         USE_POSTGRES = False
+else:
+    logger.info("✅ Используется SQLite (DATABASE_URL не установлен)")
 
 if not USE_POSTGRES:
     # Используем SQLite (для локальной разработки)
@@ -83,14 +88,17 @@ if not USE_POSTGRES:
 
 def init_database():
     """Инициализирует базу данных и создает таблицу если её нет"""
+    logger.info(f"🔍 Инициализация БД: USE_POSTGRES={USE_POSTGRES}, DATABASE_URL установлен={bool(os.getenv('DATABASE_URL'))}")
     try:
         conn = get_connection()
         if not conn:
+            logger.error("❌ Не удалось получить соединение с БД")
             return False
         
         cursor = conn.cursor()
         
         # Определяем тип БД и проверяем существование таблицы
+        logger.info(f"📊 Проверка таблиц: USE_POSTGRES={USE_POSTGRES}")
         if USE_POSTGRES:
             # PostgreSQL - проверяем через information_schema
             cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'vocabulary');")
@@ -278,9 +286,11 @@ def init_database():
         if USE_POSTGRES:
             cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'word_statistics');")
             stats_table_exists = cursor.fetchone()[0]
+            logger.info(f"Проверка таблицы word_statistics (PostgreSQL): существует={stats_table_exists}")
         else:
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='word_statistics';")
             stats_table_exists = cursor.fetchone()
+            logger.info(f"Проверка таблицы word_statistics (SQLite): существует={bool(stats_table_exists)}")
         
         if not stats_table_exists:
             # Таблица не существует - создаем
