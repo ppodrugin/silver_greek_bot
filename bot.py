@@ -860,16 +860,6 @@ async def handle_reading_voice(update: Update, context: ContextTypes.DEFAULT_TYP
 
 def main():
     """Запуск бота"""
-    import os
-    
-    # Проверяем, не запущен ли бот локально при наличии DATABASE_URL (продакшен)
-    DATABASE_URL = os.getenv('DATABASE_URL')
-    if DATABASE_URL:
-        logger.warning("⚠️ DATABASE_URL установлен - это продакшен окружение!")
-        logger.warning("⚠️ Локальный запуск бота отключен для предотвращения конфликтов с Render")
-        logger.warning("⚠️ Для локального запуска убедитесь, что DATABASE_URL не установлен")
-        return
-    
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN не установлен!")
         return
