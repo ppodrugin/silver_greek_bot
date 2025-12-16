@@ -249,7 +249,7 @@ async def handle_read_text_command(update: Update, context: ContextTypes.DEFAULT
     )
 
 async def handle_ai_generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /ai_generate"""
+    """Обработчик команды /ai (ранее /ai_generate)"""
     if not await check_tracked_user(update):
         return
     
@@ -397,8 +397,12 @@ async def handle_ai_training_voice(update: Update, context: ContextTypes.DEFAULT
             await update.message.reply_text("Ошибка: не найдено текущее предложение")
             return
         
-        # Сравниваем
-        is_correct, similarity = compare_texts(recognized_text, correct_greek)
+        # Получаем порог похожести из состояния пользователя (по умолчанию 0.85 = 85%)
+        threshold = state.get('similarity_threshold', 85) / 100.0  # Конвертируем проценты в 0.0-1.0
+        
+        # Сравниваем (используем более гибкую функцию для предложений)
+        from utils import compare_texts_sentences
+        is_correct, similarity = compare_texts_sentences(recognized_text, correct_greek, threshold=threshold)
         
         stats['total_attempts'] += 1
         

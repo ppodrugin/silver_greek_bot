@@ -422,9 +422,8 @@ def compare_texts_detailed(user_text, correct_text):
                 best_similarity = sim
                 best_match_idx = j
         
-        # Если похожесть достаточна (>= 0.8), считаем совпадением
-        # Повысили порог для более строгой оценки
-        if best_similarity >= 0.8 and best_match_idx is not None:
+        # Если похожесть достаточна (>= threshold - 0.05), считаем совпадением
+        if best_similarity >= threshold - 0.05 and best_match_idx is not None:
             user_idx = best_match_idx + 1  # Переходим к следующему слову
         else:
             # Ошибка: слово не распознано или распознано неправильно
@@ -459,7 +458,7 @@ def compare_texts_detailed(user_text, correct_text):
                     best_sim = sim
                     nearest_correct_idx = k
             
-            if best_sim < 0.8:
+            if best_sim < threshold - 0.05:
                 mistakes.append({
                     'position': nearest_correct_idx if nearest_correct_idx is not None else len(correct_words),
                     'recognized': user_words[j],
@@ -472,15 +471,126 @@ def compare_texts_detailed(user_text, correct_text):
     correct_matches = total_words - len(mistakes)
     similarity = correct_matches / total_words if total_words > 0 else 0.0
     
-    # Повысили порог для более строгой оценки
-    is_correct = similarity >= 0.85 and len(mistakes) == 0
+    # Используем threshold для оценки
+    is_correct = similarity >= threshold and len(mistakes) == 0
     
     return is_correct, similarity, mistakes
 
-def compare_texts(user_text, correct_text):
+def compare_texts_sentences(user_text, correct_text, threshold=0.85):
+    """
+    Сравнивает произнесенный текст с правильным для предложений (более гибкая версия)
+    Используется для AI тренировки, где предложения могут быть длинными
+    
+    Args:
+        user_text: текст пользователя
+        correct_text: правильный текст
+        threshold: порог похожести (0.0-1.0), по умолчанию 0.85
+    
+    Returns:
+        tuple: (is_correct, similarity_score)
+    """
+    if not user_text:
+        return False, 0.0
+    
+    # Проверяем, является ли user_text числом, и преобразуем его в греческое числительное
+    user_stripped = user_text.strip()
+    if user_stripped.isdigit():
+        greek_num = number_to_greek(user_stripped)
+        if greek_num:
+            user_text = greek_num
+            logger.debug(f"Преобразовано число {user_stripped} в греческое: {greek_num}")
+    
+    # Нормализуем оба текста
+    user_normalized = normalize_text(user_text)
+    correct_normalized = normalize_text(correct_text)
+    
+    # Нормализуем варианты звука "и"
+    user_normalized_i = normalize_greek_i_sound(user_normalized)
+    correct_normalized_i = normalize_greek_i_sound(correct_normalized)
+    
+    # Точное совпадение
+    if user_normalized == correct_normalized:
+        return True, 1.0
+    
+    # Проверяем совпадение после нормализации вариантов "и"
+    if user_normalized_i == correct_normalized_i:
+        return True, 0.98
+    
+    # Разбиваем на слова
+    user_words = user_normalized.split()
+    correct_words = correct_normalized.split()
+    
+    if len(user_words) == 0 or len(correct_words) == 0:
+        similarity = word_similarity(user_normalized, correct_normalized)
+        return similarity >= threshold, similarity
+    
+    # Для предложений используем более гибкое сравнение, но с проверкой каждого слова
+    # Сравниваем слова по порядку (для предложений порядок важен)
+    word_similarities = []
+    min_similarity = 1.0  # Минимальная похожесть среди всех слов
+    
+    # Сравниваем слова по порядку, но с окном поиска для гибкости
+    user_idx = 0
+    for correct_word in correct_words:
+        best_similarity = 0.0
+        best_match_idx = None
+        
+        # Ищем наиболее похожее слово в окне ±2 слова от текущей позиции
+        search_start = max(0, user_idx - 2)
+        search_end = min(len(user_words), user_idx + 3)
+        
+        for j in range(search_start, search_end):
+            if j >= len(user_words):
+                break
+            sim = word_similarity(user_words[j], correct_word)
+            if sim > best_similarity:
+                best_similarity = sim
+                best_match_idx = j
+        
+        if best_match_idx is not None:
+            # Обновляем минимальную похожесть
+            min_similarity = min(min_similarity, best_similarity)
+            word_similarities.append(best_similarity)
+            # Двигаемся дальше по пользовательским словам
+            user_idx = best_match_idx + 1
+        else:
+            # Слово не найдено - похожесть 0
+            word_similarities.append(0.0)
+            min_similarity = 0.0
+    
+    # Средняя похожесть всех слов
+    avg_similarity = sum(word_similarities) / len(correct_words) if correct_words else 0.0
+    
+    # Процент слов с высокой похожестью (>= threshold)
+    high_similarity_count = sum(1 for sim in word_similarities if sim >= threshold)
+    high_similarity_ratio = high_similarity_count / len(correct_words) if correct_words else 0.0
+    
+    # Процент слов с приемлемой похожестью (>= threshold - 0.1)
+    acceptable_threshold = max(0.7, threshold - 0.1)
+    acceptable_similarity_count = sum(1 for sim in word_similarities if sim >= acceptable_threshold)
+    acceptable_similarity_ratio = acceptable_similarity_count / len(correct_words) if correct_words else 0.0
+    
+    # Для предложений считаем правильным только если:
+    # - Средняя похожесть >= threshold + 0.03 И >= 85% слов имеют похожесть >= threshold И минимальная похожесть >= acceptable_threshold
+    # Это гарантирует, что большинство слов действительно правильные и нет сильно отличающихся слов
+    is_correct = (avg_similarity >= threshold + 0.03 and 
+                  high_similarity_ratio >= 0.85 and 
+                  min_similarity >= acceptable_threshold)
+    
+    # Финальная похожесть учитывает среднюю похожесть, процент высокопохожих слов и минимальную похожесть
+    final_similarity = avg_similarity * 0.7 + high_similarity_ratio * 0.2 + min_similarity * 0.1
+    
+    return is_correct, final_similarity
+
+def compare_texts(user_text, correct_text, threshold=0.85):
     """
     Сравнивает произнесенный текст с правильным
     Использует более гибкий алгоритм с учетом фонетической похожести
+    
+    Args:
+        user_text: текст пользователя
+        correct_text: правильный текст
+        threshold: порог похожести (0.0-1.0), по умолчанию 0.85
     
     Returns:
         tuple: (is_correct, similarity_score)
@@ -519,8 +629,7 @@ def compare_texts(user_text, correct_text):
     if len(user_words) == 0 or len(correct_words) == 0:
         # Сравниваем как целые строки
         similarity = word_similarity(user_normalized, correct_normalized)
-        # Еще больше повысили порог для более строгой оценки
-        return similarity >= 0.8, similarity
+        return similarity >= threshold, similarity
     
     # Греческие артикли (для более гибкого сравнения)
     greek_articles = {'ο', 'η', 'το', 'οι', 'τα', 'του', 'της', 'των'}
@@ -560,11 +669,11 @@ def compare_texts(user_text, correct_text):
         # Проверяем артикли строго - они должны совпадать
         articles_match = user_articles == correct_articles
         
-        # Если основные слова очень похожи (>0.85) И артикли совпадают, считаем правильным
-        if main_similarity >= 0.85 and articles_match:
+        # Если основные слова очень похожи (>= threshold) И артикли совпадают, считаем правильным
+        if main_similarity >= threshold and articles_match:
             final_similarity = main_similarity
             is_correct = True
-        elif main_similarity >= 0.85 and not articles_match:
+        elif main_similarity >= threshold and not articles_match:
             # Основные слова правильные, но артикли не совпадают - это неправильно
             final_similarity = main_similarity * 0.7  # Штраф за неправильный артикль
             is_correct = False
@@ -585,7 +694,7 @@ def compare_texts(user_text, correct_text):
                     # Артикли должны совпадать для правильного ответа
                     if articles_match:
                         final_similarity = main_similarity
-                        is_correct = final_similarity >= 0.85
+                        is_correct = final_similarity >= threshold
                     else:
                         # Артикли не совпадают - это неправильно
                         final_similarity = main_similarity * 0.7  # Штраф за неправильный артикль
@@ -612,8 +721,7 @@ def compare_texts(user_text, correct_text):
             total_similarity += best_similarity
         
         final_similarity = total_similarity / len(correct_words) if correct_words else 0.0
-        # Еще больше повысили порог для более строгой оценки
-        is_correct = final_similarity >= 0.8
+        is_correct = final_similarity >= threshold
     
     # Также проверяем общую похожесть строки (как запасной вариант)
     # Но НЕ используем её для повышения, если основные слова сильно отличаются
@@ -665,11 +773,10 @@ def compare_texts(user_text, correct_text):
                     is_correct = True
     
     # Для греческого языка делаем более строгое сравнение
-    # Повышаем порог до 0.82 для более точной оценки
-    # Учитываем особенности распознавания греческого, но не слишком мягко
+    # Используем threshold для финальной проверки
     # ВАЖНО: не переопределяем is_correct, если он уже False из-за низкой похожести основных слов
     if is_correct:  # Только если еще не определено как неправильное
-        is_correct = final_similarity >= 0.82
+        is_correct = final_similarity >= threshold
     
     return is_correct, final_similarity
 

@@ -126,7 +126,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /add_words - Добавить слова в словарь
 /training - Начать тренировку слов
 /read_text - Режим чтения текста
-/ai_generate - Генерация предложений через ИИ
+/ai - Генерация предложений через ИИ
 /info - Показать информацию о версии и статистику
 /reset_stats - Сбросить статистику по словам
 /get_words - Экспортировать словарь в CSV
@@ -185,7 +185,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
    Отправьте текст на греческом, затем произнесите его голосом
    🎤 Можно сказать голосом: "чтение текста"
 
-4️⃣ /ai_generate - Генерация предложений
+4️⃣ /ai - Генерация предложений
    Опишите задание (например: "сгенери 50 предложений с винительным падежом")
    Бот сгенерирует предложения и начнет тренировку
    🎤 Можно сказать голосом: "генерация"
@@ -222,6 +222,49 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     
     await update.message.reply_text(help_text)
+
+async def level_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /level - установка порога похожести для текущей сессии"""
+    user_id = update.effective_user.id
+    state = get_user_state(user_id)
+    
+    if not context.args:
+        # Показываем текущий уровень
+        current_threshold = state.get('similarity_threshold', 85)  # По умолчанию 85
+        await update.message.reply_text(
+            f"📊 Текущий порог похожести: <b>{current_threshold}%</b>\n\n"
+            f"Использование: /level <число от 75 до 100>\n\n"
+            f"Пример: /level 90\n\n"
+            f"Чем выше значение, тем строже проверка правильности ответов.\n"
+            f"Настройка действует только для текущей сессии.",
+            parse_mode='HTML'
+        )
+        return
+    
+    try:
+        threshold = int(context.args[0])
+        
+        if not (75 <= threshold <= 100):
+            await update.message.reply_text(
+                "❌ Порог похожести должен быть от 75 до 100.\n\n"
+                "Пример: /level 90"
+            )
+            return
+        
+        # Сохраняем в состояние пользователя (сессия)
+        state['similarity_threshold'] = threshold
+        
+        await update.message.reply_text(
+            f"✅ Порог похожести установлен: <b>{threshold}%</b>\n\n"
+            f"Теперь ответы будут считаться правильными, если их похожесть >= {threshold}%.\n"
+            f"Настройка действует только для текущей сессии.",
+            parse_mode='HTML'
+        )
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Неверный формат. Используйте число от 75 до 100.\n\n"
+            "Пример: /level 90"
+        )
 
 @require_tracked_user
 async def reset_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -775,7 +818,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.warning(f"❌ Неизвестный режим для user_id={user_id}: mode={current_mode}, state={state}")
         await update.message.reply_text(
-            "Сначала запустите тренировку (/training), чтение текста (/read_text) или генерацию (/ai_generate)"
+            "Сначала запустите тренировку (/training), чтение текста (/read_text) или генерацию (/ai)"
         )
 
 async def handle_training_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -842,8 +885,11 @@ async def handle_training_voice(update: Update, context: ContextTypes.DEFAULT_TY
             await send_next_training_word(update, context)
             return
         
+        # Получаем порог похожести из состояния пользователя (по умолчанию 0.85 = 85%)
+        threshold = state.get('similarity_threshold', 85) / 100.0  # Конвертируем проценты в 0.0-1.0
+        
         # Сравниваем
-        is_correct, similarity = compare_texts(recognized_text, correct_greek)
+        is_correct, similarity = compare_texts(recognized_text, correct_greek, threshold=threshold)
         
         # Анализируем ошибку артикля, если есть
         article_error = None
@@ -951,8 +997,11 @@ async def handle_reading_voice(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
         
+        # Получаем порог похожести из состояния пользователя (по умолчанию 0.85 = 85%)
+        threshold = state.get('similarity_threshold', 85) / 100.0  # Конвертируем проценты в 0.0-1.0
+        
         # Сравниваем с детальным анализом ошибок
-        is_correct, similarity, mistakes = compare_texts_detailed(recognized_text, correct_text)
+        is_correct, similarity, mistakes = compare_texts_detailed(recognized_text, correct_text, threshold=threshold)
         
         # Обновляем статистику чтения текста в памяти
         if user_id not in text_reading_stats:
@@ -1061,6 +1110,7 @@ def main():
     application.add_handler(CommandHandler("info", info_command))
     application.add_handler(CommandHandler("get_words", get_words))
     application.add_handler(CommandHandler("reset_stats", reset_stats))
+    application.add_handler(CommandHandler("level", level_command))
     application.add_handler(CommandHandler("my_id", my_id))
     application.add_handler(CommandHandler("add_user", add_user))
     application.add_handler(CommandHandler("remove_user", remove_user))
@@ -1071,7 +1121,8 @@ def main():
     application.add_handler(CommandHandler("add_words", handle_add_word_command))
     application.add_handler(CommandHandler("training", handle_training_command))
     application.add_handler(CommandHandler("read_text", handle_read_text_command))
-    application.add_handler(CommandHandler("ai_generate", handle_ai_generate_command))
+    application.add_handler(CommandHandler("ai", handle_ai_generate_command))
+    application.add_handler(CommandHandler("ai_generate", handle_ai_generate_command))  # Старая команда для обратной совместимости
     
     # Альтернативные команды на латинице (для удобства)
     application.add_handler(CommandHandler("trenirovka", handle_training_command))
