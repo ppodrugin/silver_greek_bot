@@ -54,6 +54,99 @@ def remove_greek_accents(text):
         result = result.replace(accented, unaccented)
     return result
 
+def analyze_article_error(user_articles, correct_articles):
+    """
+    Анализирует ошибку в артиклях и возвращает описание ошибки
+    
+    Returns:
+        str: описание ошибки или None, если ошибки нет
+    """
+    if user_articles == correct_articles:
+        return None
+    
+    # Греческие артикли с их характеристиками
+    article_info = {
+        'ο': {'gender': 'm', 'number': 'sg', 'name': 'мужской род, единственное число'},
+        'η': {'gender': 'f', 'number': 'sg', 'name': 'женский род, единственное число'},
+        'το': {'gender': 'n', 'number': 'sg', 'name': 'средний род, единственное число'},
+        'οι': {'gender': 'm', 'number': 'pl', 'name': 'мужской род, множественное число'},
+        'τα': {'gender': 'n', 'number': 'pl', 'name': 'средний род, множественное число'},
+        'του': {'gender': 'm', 'number': 'sg', 'case': 'gen', 'name': 'мужской род, единственное число, родительный падеж'},
+        'της': {'gender': 'f', 'number': 'sg', 'case': 'gen', 'name': 'женский род, единственное число, родительный падеж'},
+        'των': {'gender': 'any', 'number': 'pl', 'case': 'gen', 'name': 'множественное число, родительный падеж'}
+    }
+    
+    if len(user_articles) != len(correct_articles):
+        return f"Количество артиклей не совпадает: вы использовали {len(user_articles)}, нужно {len(correct_articles)}"
+    
+    if len(user_articles) == 0:
+        return "Артикль отсутствует"
+    
+    if len(user_articles) == 1 and len(correct_articles) == 1:
+        user_art = user_articles[0]
+        correct_art = correct_articles[0]
+        
+        user_info = article_info.get(user_art, {})
+        correct_info = article_info.get(correct_art, {})
+        
+        if user_info and correct_info:
+            # Проверяем число
+            if user_info.get('number') != correct_info.get('number'):
+                if user_info.get('number') == 'pl' and correct_info.get('number') == 'sg':
+                    return "Использован артикль множественного числа вместо единственного"
+                elif user_info.get('number') == 'sg' and correct_info.get('number') == 'pl':
+                    return "Использован артикль единственного числа вместо множественного"
+            
+            # Проверяем род
+            if user_info.get('gender') != correct_info.get('gender'):
+                return f"Неправильный род артикля: {user_info.get('name', 'неизвестно')} вместо {correct_info.get('name', 'неизвестно')}"
+    
+    return "Неправильный артикль"
+
+def normalize_greek_i_sound(text):
+    """
+    Нормализует различные варианты написания звука "и" в греческом языке.
+    Преобразует η, υ, οι, ει, υι в ι для более гибкого сравнения при распознавании речи.
+    
+    ВАЖНО: Это делается только для сравнения произношения, не меняет правильное написание.
+    Используется для обработки ошибок распознавания речи, когда правильный звук записан другой буквой.
+    """
+    if not text:
+        return text
+    
+    result = text
+    
+    # Список греческих артиклей, которые не должны изменяться
+    greek_articles = {'ο', 'η', 'το', 'οι', 'τα', 'του', 'της', 'των'}
+    
+    # Разбиваем на слова для более точной обработки
+    words = result.split()
+    normalized_words = []
+    
+    for word in words:
+        # Не изменяем артикли
+        if word in greek_articles:
+            normalized_words.append(word)
+            continue
+        
+        normalized_word = word
+        
+        # Заменяем диграфы οι, ει, υι на ι
+        # Но только если это не артикль "οι" (уже обработано выше)
+        normalized_word = normalized_word.replace('οι', 'ι')
+        normalized_word = normalized_word.replace('ει', 'ι')
+        normalized_word = normalized_word.replace('υι', 'ι')
+        
+        # Заменяем η на ι (но сохраняем в артиклях, которые уже обработаны)
+        normalized_word = normalized_word.replace('η', 'ι')
+        
+        # Заменяем υ на ι
+        normalized_word = normalized_word.replace('υ', 'ι')
+        
+        normalized_words.append(normalized_word)
+    
+    return ' '.join(normalized_words)
+
 def number_to_greek(num_str):
     """
     Преобразует число (строку) в греческое числительное
@@ -186,6 +279,13 @@ def word_similarity(word1, word2):
     if word1_no_accents == word2_no_accents:
         return 0.95  # Почти совпадает, только ударения разные
     
+    # Нормализуем варианты звука "и" для более гибкого сравнения
+    word1_normalized_i = normalize_greek_i_sound(word1_no_accents)
+    word2_normalized_i = normalize_greek_i_sound(word2_no_accents)
+    
+    if word1_normalized_i == word2_normalized_i:
+        return 0.92  # Совпадает после нормализации вариантов "и" - правильное произношение
+    
     # Строгая проверка: если слова отличаются критичными буквами, это разные слова
     # Например, "φίλος" (друг, м.р.) и "φίλη" (подруга, ж.р.) - разные слова
     # "φίλος" и "φίλοι" (друзья) - разные формы
@@ -288,6 +388,14 @@ def compare_texts_detailed(user_text, correct_text):
     # Точное совпадение
     if user_normalized == correct_normalized:
         return True, 1.0, []
+    
+    # Нормализуем варианты звука "и" для более гибкого сравнения при распознавании речи
+    user_normalized_i = normalize_greek_i_sound(user_normalized)
+    correct_normalized_i = normalize_greek_i_sound(correct_normalized)
+    
+    # Проверяем совпадение после нормализации вариантов "и"
+    if user_normalized_i == correct_normalized_i:
+        return True, 0.98, []  # Почти идеальное совпадение, только разные буквы для звука "и"
     
     # Разбиваем на слова
     user_words = user_normalized.split()
@@ -392,9 +500,17 @@ def compare_texts(user_text, correct_text):
     user_normalized = normalize_text(user_text)
     correct_normalized = normalize_text(correct_text)
     
-    # Точное совпадение
+    # Нормализуем варианты звука "и" для более гибкого сравнения при распознавании речи
+    user_normalized_i = normalize_greek_i_sound(user_normalized)
+    correct_normalized_i = normalize_greek_i_sound(correct_normalized)
+    
+    # Точное совпадение (сначала проверяем без нормализации "и", потом с нормализацией)
     if user_normalized == correct_normalized:
         return True, 1.0
+    
+    # Проверяем совпадение после нормализации вариантов "и"
+    if user_normalized_i == correct_normalized_i:
+        return True, 0.98  # Почти идеальное совпадение, только разные буквы для звука "и"
     
     # Разбиваем на слова
     user_words = user_normalized.split()
@@ -631,6 +747,97 @@ def recognize_voice_from_file(audio_path, language='el-GR'):
                 os.remove(wav_path)
             except Exception as e:
                 logger.warning(f"Не удалось удалить временный WAV файл {wav_path}: {e}")
+
+def recognize_voice_command(audio_path, language='ru-RU'):
+    """
+    Распознает голосовую команду из аудио файла
+    
+    Args:
+        audio_path: путь к аудио файлу
+        language: код языка для распознавания (по умолчанию русский)
+    
+    Returns:
+        str: распознанная команда или None
+    """
+    try:
+        recognizer = sr.Recognizer()
+        
+        # Конвертируем OGG в WAV если нужно
+        import os
+        import subprocess
+        
+        wav_path = audio_path
+        if audio_path.endswith('.ogg'):
+            wav_path = audio_path.replace('.ogg', '.wav')
+            try:
+                result = subprocess.run(
+                    ['ffmpeg', '-i', audio_path, '-ar', '16000', '-ac', '1', '-y', wav_path],
+                    check=True,
+                    capture_output=True,
+                    timeout=10
+                )
+            except FileNotFoundError:
+                try:
+                    from pydub import AudioSegment
+                    audio = AudioSegment.from_ogg(audio_path)
+                    audio = audio.set_frame_rate(16000).set_channels(1)
+                    audio.export(wav_path, format="wav")
+                except Exception:
+                    wav_path = audio_path
+            except Exception:
+                wav_path = audio_path
+        
+        # Читаем аудио файл
+        with sr.AudioFile(wav_path) as source:
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            audio = recognizer.record(source)
+        
+        # Распознаем речь
+        try:
+            text = recognizer.recognize_google(audio, language=language)
+            return text.lower().strip()
+        except sr.UnknownValueError:
+            return None
+        except sr.RequestError as e:
+            logger.error(f"Ошибка сервиса распознавания команд: {e}")
+            return None
+    except Exception as e:
+        logger.error(f"Ошибка при распознавании голосовой команды: {e}", exc_info=True)
+        return None
+    finally:
+        # Удаляем временный WAV файл если он был создан
+        if 'wav_path' in locals() and wav_path != audio_path and os.path.exists(wav_path):
+            try:
+                os.remove(wav_path)
+            except Exception as e:
+                logger.warning(f"Не удалось удалить временный WAV файл {wav_path}: {e}")
+
+def match_voice_command(recognized_text, command_map):
+    """
+    Сопоставляет распознанный текст с командой из словаря
+    
+    Args:
+        recognized_text: распознанный текст
+        command_map: словарь {команда: функция}
+    
+    Returns:
+        str: найденная команда или None
+    """
+    if not recognized_text:
+        return None
+    
+    recognized_lower = recognized_text.lower().strip()
+    
+    # Прямое совпадение
+    if recognized_lower in command_map:
+        return recognized_lower
+    
+    # Проверяем частичное совпадение (команда может быть частью фразы)
+    for command in command_map.keys():
+        if command in recognized_lower or recognized_lower in command:
+            return command
+    
+    return None
 
 def text_to_speech_file(text, language='el', output_path=None):
     """
