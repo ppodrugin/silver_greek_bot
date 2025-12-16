@@ -14,14 +14,27 @@ def normalize_text(text):
     - убирает пунктуацию
     - приводит к нижнему регистру
     - убирает лишние пробелы
+    - преобразует числа в греческие числительные
     - убирает греческие ударения для более гибкого сравнения
     """
     if not text:
         return ""
+    
+    # Проверяем, является ли весь текст числом
+    text_stripped = text.strip()
+    if text_stripped.isdigit():
+        # Преобразуем число в греческое числительное
+        greek_num = number_to_greek(text_stripped)
+        if greek_num:
+            text = greek_num
+        # Если не удалось преобразовать, оставляем как есть
+    
     # Убираем пунктуацию
     text = re.sub(r'[.,!?;:()]', '', text)
     # Приводим к нижнему регистру
     text = text.lower()
+    # Убираем греческие ударения перед дальнейшей обработкой
+    text = remove_greek_accents(text)
     # Убираем лишние пробелы
     text = ' '.join(text.split())
     return text.strip()
@@ -40,6 +53,100 @@ def remove_greek_accents(text):
     for accented, unaccented in greek_accents.items():
         result = result.replace(accented, unaccented)
     return result
+
+def number_to_greek(num_str):
+    """
+    Преобразует число (строку) в греческое числительное
+    Поддерживает числа от 1 до 100, сотни (100-900) и 1000
+    """
+    try:
+        num = int(num_str.strip())
+    except (ValueError, AttributeError):
+        return None
+    
+    # Базовые числа 0-20
+    basic_numbers = {
+        0: 'μηδέν', 1: 'ένα', 2: 'δύο', 3: 'τρία', 4: 'τέσσερα', 5: 'πέντε',
+        6: 'έξι', 7: 'επτά', 8: 'οκτώ', 9: 'εννέα', 10: 'δέκα',
+        11: 'έντεκα', 12: 'δώδεκα', 13: 'δεκατρία', 14: 'δεκατέσσερα',
+        15: 'δεκαπέντε', 16: 'δεκαέξι', 17: 'δεκαεπτά', 18: 'δεκαοκτώ',
+        19: 'δεκαεννέα', 20: 'είκοσι'
+    }
+    
+    # Десятки 30-90
+    tens = {
+        30: 'τριάντα', 40: 'σαράντα', 50: 'πενήντα', 60: 'εξήντα',
+        70: 'εβδομήντα', 80: 'ογδόντα', 90: 'ενενήντα'
+    }
+    
+    # Сотни 100-900
+    hundreds = {
+        100: 'εκατό', 200: 'διακόσια', 300: 'τριακόσια', 400: 'τετρακόσια',
+        500: 'πεντακόσια', 600: 'εξακόσια', 700: 'επτακόσια',
+        800: 'οκτακόσια', 900: 'εννιακόσια'
+    }
+    
+    # 1000
+    if num == 1000:
+        return 'χίλια'
+    
+    # Точное совпадение в базовых числах
+    if num in basic_numbers:
+        return basic_numbers[num]
+    
+    # Точное совпадение в десятках
+    if num in tens:
+        return tens[num]
+    
+    # Точное совпадение в сотнях
+    if num in hundreds:
+        return hundreds[num]
+    
+    # Составные числа 21-99
+    if 21 <= num <= 99:
+        tens_part = (num // 10) * 10
+        ones_part = num % 10
+        
+        # Для 21-29 используем 20 из basic_numbers
+        if 21 <= num <= 29:
+            if ones_part == 0:
+                return basic_numbers[20]
+            return f"{basic_numbers[20]} {basic_numbers[ones_part]}"
+        # Для 30-99 используем tens
+        elif tens_part in tens and ones_part in basic_numbers:
+            if ones_part == 0:
+                return tens[tens_part]
+            return f"{tens[tens_part]} {basic_numbers[ones_part]}"
+    
+    # Составные числа с сотнями (101-999)
+    if 101 <= num <= 999:
+        hundreds_part = (num // 100) * 100
+        remainder = num % 100
+        
+        if hundreds_part in hundreds:
+            if remainder == 0:
+                return hundreds[hundreds_part]
+            elif remainder in basic_numbers:
+                return f"{hundreds[hundreds_part]} {basic_numbers[remainder]}"
+            elif remainder in tens:
+                return f"{hundreds[hundreds_part]} {tens[remainder]}"
+            elif 21 <= remainder <= 29:
+                # Для 21-29 используем 20 из basic_numbers
+                ones_part = remainder % 10
+                if ones_part == 0:
+                    return f"{hundreds[hundreds_part]} {basic_numbers[20]}"
+                return f"{hundreds[hundreds_part]} {basic_numbers[20]} {basic_numbers[ones_part]}"
+            elif 30 <= remainder <= 99:
+                tens_part = (remainder // 10) * 10
+                ones_part = remainder % 10
+                if tens_part in tens:
+                    if ones_part == 0:
+                        return f"{hundreds[hundreds_part]} {tens[tens_part]}"
+                    elif ones_part in basic_numbers:
+                        return f"{hundreds[hundreds_part]} {tens[tens_part]} {basic_numbers[ones_part]}"
+    
+    # Для чисел больше 1000 возвращаем None (не поддерживаем)
+    return None
 
 def levenshtein_distance(s1, s2):
     """
@@ -166,6 +273,14 @@ def compare_texts_detailed(user_text, correct_text):
     if not user_text:
         return False, 0.0, []
     
+    # Проверяем, является ли user_text числом, и преобразуем его в греческое числительное
+    user_stripped = user_text.strip()
+    if user_stripped.isdigit():
+        greek_num = number_to_greek(user_stripped)
+        if greek_num:
+            user_text = greek_num
+            logger.debug(f"Преобразовано число {user_stripped} в греческое: {greek_num}")
+    
     # Нормализуем оба текста
     user_normalized = normalize_text(user_text)
     correct_normalized = normalize_text(correct_text)
@@ -265,7 +380,15 @@ def compare_texts(user_text, correct_text):
     if not user_text:
         return False, 0.0
     
-    # Нормализуем оба текста
+    # Проверяем, является ли user_text числом, и преобразуем его в греческое числительное
+    user_stripped = user_text.strip()
+    if user_stripped.isdigit():
+        greek_num = number_to_greek(user_stripped)
+        if greek_num:
+            user_text = greek_num
+            logger.debug(f"Преобразовано число {user_stripped} в греческое: {greek_num}")
+    
+    # Нормализуем оба текста (ударения уже убраны в normalize_text)
     user_normalized = normalize_text(user_text)
     correct_normalized = normalize_text(correct_text)
     
@@ -273,20 +396,13 @@ def compare_texts(user_text, correct_text):
     if user_normalized == correct_normalized:
         return True, 1.0
     
-    # Проверяем похожесть без ударений
-    user_no_accents = remove_greek_accents(user_normalized)
-    correct_no_accents = remove_greek_accents(correct_normalized)
-    
-    if user_no_accents == correct_no_accents:
-        return True, 0.95
-    
     # Разбиваем на слова
     user_words = user_normalized.split()
     correct_words = correct_normalized.split()
     
     if len(user_words) == 0 or len(correct_words) == 0:
         # Сравниваем как целые строки
-        similarity = word_similarity(user_no_accents, correct_no_accents)
+        similarity = word_similarity(user_normalized, correct_normalized)
         # Еще больше повысили порог для более строгой оценки
         return similarity >= 0.8, similarity
     
@@ -325,11 +441,17 @@ def compare_texts(user_text, correct_text):
         # Средняя похожесть основных слов
         main_similarity = total_similarity / len(correct_main_words) if correct_main_words else 0.0
         
-        # Если основные слова очень похожи (>0.85), считаем это хорошим результатом
-        # даже если артикли не совпадают (еще больше повысили порог)
-        if main_similarity >= 0.85:
+        # Проверяем артикли строго - они должны совпадать
+        articles_match = user_articles == correct_articles
+        
+        # Если основные слова очень похожи (>0.85) И артикли совпадают, считаем правильным
+        if main_similarity >= 0.85 and articles_match:
             final_similarity = main_similarity
             is_correct = True
+        elif main_similarity >= 0.85 and not articles_match:
+            # Основные слова правильные, но артикли не совпадают - это неправильно
+            final_similarity = main_similarity * 0.7  # Штраф за неправильный артикль
+            is_correct = False
         else:
             # Если основные слова сильно отличаются (<0.7), это неправильно
             # даже если артикли совпадают
@@ -337,17 +459,21 @@ def compare_texts(user_text, correct_text):
                 final_similarity = main_similarity
                 is_correct = False
             else:
-                # Учитываем артикли, но с меньшим весом
+                # Учитываем артикли строго
                 # ВАЖНО: если основное слово имеет похожесть < 0.75, это неправильно
                 # даже если артикли совпадают
                 if main_similarity < 0.75:
                     final_similarity = main_similarity
                     is_correct = False
                 else:
-                    article_similarity = 1.0 if user_articles == correct_articles else 0.5
-                    final_similarity = main_similarity * 0.9 + article_similarity * 0.1
-                    # Еще больше повысили порог для более строгой оценки
-                    is_correct = final_similarity >= 0.85
+                    # Артикли должны совпадать для правильного ответа
+                    if articles_match:
+                        final_similarity = main_similarity
+                        is_correct = final_similarity >= 0.85
+                    else:
+                        # Артикли не совпадают - это неправильно
+                        final_similarity = main_similarity * 0.7  # Штраф за неправильный артикль
+                        is_correct = False
     else:
         # Нет основных слов, сравниваем как есть
         total_similarity = 0.0
@@ -375,7 +501,7 @@ def compare_texts(user_text, correct_text):
     
     # Также проверяем общую похожесть строки (как запасной вариант)
     # Но НЕ используем её для повышения, если основные слова сильно отличаются
-    string_similarity = word_similarity(user_no_accents, correct_no_accents)
+    string_similarity = word_similarity(user_normalized, correct_normalized)
     # Используем строковую похожесть только если она очень высокая (>0.92)
     # и если она не противоречит результату сравнения по словам
     # Если основные слова имеют низкую похожесть (<0.7), игнорируем строковую похожесть
@@ -390,20 +516,26 @@ def compare_texts(user_text, correct_text):
     
     # Дополнительная проверка: если хотя бы одно слово очень похоже (>0.92), повышаем общую похожесть
     # Еще больше повысили пороги для более строгой оценки
-    # ВАЖНО: не переопределяем is_correct, если основные слова сильно отличаются
+    # ВАЖНО: не переопределяем is_correct, если артикли не совпадают или основные слова сильно отличаются
     if len(user_words) > 0 and len(correct_words) > 0:
         # Проверяем похожесть основных слов (без артиклей)
         if user_main_words and correct_main_words:
+            # Проверяем артикли строго
+            articles_match = user_articles == correct_articles
+            
             main_max_sim = max(
                 word_similarity(uw, cw) 
                 for uw in user_main_words 
                 for cw in correct_main_words
             )
-            # Только если основные слова очень похожи (>0.92), можем повысить оценку
+            # Только если основные слова очень похожи (>0.92) И артикли совпадают, можем повысить оценку
             if main_max_sim > 0.92:
                 final_similarity = max(final_similarity, main_max_sim * 0.95)
-                if main_max_sim >= 0.92:
+                if main_max_sim >= 0.92 and articles_match:
                     is_correct = True
+                elif main_max_sim >= 0.92 and not articles_match:
+                    # Основные слова правильные, но артикли не совпадают - неправильно
+                    is_correct = False
         else:
             # Если нет основных слов, проверяем все слова
             max_word_sim = max(
@@ -499,4 +631,44 @@ def recognize_voice_from_file(audio_path, language='el-GR'):
                 os.remove(wav_path)
             except Exception as e:
                 logger.warning(f"Не удалось удалить временный WAV файл {wav_path}: {e}")
+
+def text_to_speech_file(text, language='el', output_path=None):
+    """
+    Преобразует текст в голосовое сообщение (аудио файл)
+    
+    Args:
+        text: текст для преобразования
+        language: код языка (по умолчанию 'el' для греческого)
+        output_path: путь для сохранения файла (если None, создается временный файл)
+    
+    Returns:
+        str: путь к созданному аудио файлу (OGG) или None в случае ошибки
+    """
+    try:
+        from gtts import gTTS
+        import os
+        import tempfile
+        
+        if not text or not text.strip():
+            logger.warning("Пустой текст для преобразования в речь")
+            return None
+        
+        # Создаем временный файл, если путь не указан
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='tts_')
+            os.close(fd)
+        
+        # Генерируем аудио
+        tts = gTTS(text=text, lang=language, slow=False)
+        tts.save(output_path)
+        
+        logger.debug(f"Сгенерировано голосовое сообщение: {output_path}")
+        return output_path
+        
+    except ImportError:
+        logger.error("gTTS не установлен! Установите: pip install gtts")
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка при генерации голосового сообщения: {e}", exc_info=True)
+        return None
 

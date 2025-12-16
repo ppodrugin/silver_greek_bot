@@ -746,6 +746,7 @@ async def handle_training_voice(update: Update, context: ContextTypes.DEFAULT_TY
             # Переходим к следующему слову
             await send_next_training_word(update, context)
         else:
+            # Отправляем текстовое сообщение
             await update.message.reply_text(
                 f"❌ Не совсем правильно\n\n"
                 f"Вы сказали: {recognized_text}\n"
@@ -753,6 +754,29 @@ async def handle_training_voice(update: Update, context: ContextTypes.DEFAULT_TY
                 f"Похожесть: {similarity*100:.1f}%\n\n"
                 f"Попробуйте еще раз!"
             )
+            
+            # Генерируем и отправляем голосовое сообщение с правильным произношением
+            try:
+                from utils import text_to_speech_file
+                import os
+                
+                tts_file = text_to_speech_file(correct_greek, language='el')
+                if tts_file and os.path.exists(tts_file):
+                    try:
+                        with open(tts_file, 'rb') as audio_file:
+                            await update.message.reply_voice(
+                                voice=audio_file,
+                                caption="🎤 Правильное произношение:"
+                            )
+                    finally:
+                        # Удаляем временный файл
+                        try:
+                            os.remove(tts_file)
+                        except Exception as e:
+                            logger.warning(f"Не удалось удалить временный TTS файл {tts_file}: {e}")
+            except Exception as e:
+                logger.warning(f"Ошибка при генерации голосового сообщения: {e}", exc_info=True)
+                # Не прерываем выполнение, если не удалось отправить голосовое сообщение
     
     finally:
         # Удаляем временный файл
@@ -840,6 +864,29 @@ async def handle_reading_voice(update: Update, context: ContextTypes.DEFAULT_TYP
             message += "Попробуйте еще раз!"
             
             await update.message.reply_text(message, parse_mode='HTML')
+            
+            # Генерируем и отправляем голосовое сообщение с правильным произношением
+            try:
+                from utils import text_to_speech_file
+                import os
+                
+                tts_file = text_to_speech_file(correct_text, language='el')
+                if tts_file and os.path.exists(tts_file):
+                    try:
+                        with open(tts_file, 'rb') as audio_file:
+                            await update.message.reply_voice(
+                                voice=audio_file,
+                                caption="🎤 Правильное произношение:"
+                            )
+                    finally:
+                        # Удаляем временный файл
+                        try:
+                            os.remove(tts_file)
+                        except Exception as e:
+                            logger.warning(f"Не удалось удалить временный TTS файл {tts_file}: {e}")
+            except Exception as e:
+                logger.warning(f"Ошибка при генерации голосового сообщения: {e}", exc_info=True)
+                # Не прерываем выполнение, если не удалось отправить голосовое сообщение
     
     finally:
         # Удаляем временный файл
