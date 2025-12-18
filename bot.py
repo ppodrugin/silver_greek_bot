@@ -1050,7 +1050,6 @@ async def handle_reading_voice(update: Update, context: ContextTypes.DEFAULT_TYP
             # Генерируем и отправляем голосовое сообщение с правильным произношением
             try:
                 from utils import text_to_speech_file
-                import os
                 
                 tts_file = text_to_speech_file(correct_text, language='el')
                 if tts_file and os.path.exists(tts_file):

@@ -360,10 +360,15 @@ def word_similarity(word1, word2):
     
     return max(0.0, similarity)
 
-def compare_texts_detailed(user_text, correct_text):
+def compare_texts_detailed(user_text, correct_text, threshold=0.85):
     """
     Сравнивает произнесенный текст с правильным и возвращает детальную информацию
     Сравнивает слова по порядку с учетом возможных пропусков и лишних слов
+    
+    Args:
+        user_text: текст пользователя
+        correct_text: правильный текст
+        threshold: порог похожести (0.0-1.0), по умолчанию 0.85
     
     Returns:
         tuple: (is_correct, similarity_score, mistakes_list)
