@@ -245,17 +245,34 @@ async def level_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reset_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Сбросить статистику по словам для пользователя"""
     from vocabulary import Vocabulary
+    from database import get_lesson_id
     
     user_id = update.effective_user.id
     
-    vocab = Vocabulary(user_id=user_id)
-    deleted_count = vocab.reset_user_statistics(user_id)
+    # Проверяем, передан ли параметр урока
+    lesson_name = None
+    lesson_id = None
+    if context.args and len(context.args) > 0:
+        lesson_name = ' '.join(context.args).strip()
+        lesson_id = get_lesson_id(lesson_name)
+        
+        if lesson_id is None:
+            await update.message.reply_text(
+                f"❌ Урок '{lesson_name}' не найден!\n\n"
+                "Используйте команду без параметра для сброса статистики всех слов или укажите существующий урок."
+            )
+            return
     
-    await update.message.reply_text(
-        f"✅ Статистика по словам сброшена!\n\n"
-        f"Обновлено записей: {deleted_count}\n\n"
-        f"Теперь все слова будут доступны для тренировки."
-    )
+    vocab = Vocabulary(user_id=user_id)
+    deleted_count = vocab.reset_user_statistics(user_id, lesson_id=lesson_id)
+    
+    message = "✅ Статистика по словам сброшена!\n\n"
+    if lesson_name:
+        message += f"📚 Урок: <b>{lesson_name}</b>\n\n"
+    message += f"Обновлено записей: {deleted_count}\n\n"
+    message += "Теперь все слова будут доступны для тренировки."
+    
+    await update.message.reply_text(message, parse_mode='HTML')
 
 @require_admin
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -510,31 +527,70 @@ def get_git_info():
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать информацию о версии бота и статистику"""
     from vocabulary import Vocabulary
+    from database import get_lesson_id, get_user_lessons_stats
     
     user_id = update.effective_user.id
     
-    # Часть 1: Информация о версии
-    commit_hash, commit_message, commit_date = get_git_info()
-    start_time_str = BOT_START_TIME.strftime("%Y-%m-%d %H:%M:%S UTC")
+    # Проверяем, передан ли параметр урока
+    lesson_name = None
+    lesson_id = None
+    if context.args and len(context.args) > 0:
+        lesson_name = ' '.join(context.args).strip()
+        lesson_id = get_lesson_id(lesson_name)
+        
+        if lesson_id is None:
+            await update.message.reply_text(
+                f"❌ Урок '{lesson_name}' не найден!\n\n"
+                "Используйте команду /lessons чтобы увидеть список всех уроков."
+            )
+            return
     
-    message = "📋 Информация о боте:\n\n"
-    message += f"🕐 Запущен: {start_time_str}\n"
-    
-    if commit_hash:
-        message += f"\n📝 Последний коммит:\n"
-        message += f"   Хеш: <code>{commit_hash}</code>\n"
-        if commit_date:
-            message += f"   Дата: {commit_date}\n"
-        if commit_message:
-            message += f"   Сообщение: {commit_message}\n"
+    # Часть 1: Информация о версии (только если не указан урок)
+    if not lesson_name:
+        commit_hash, commit_message, commit_date = get_git_info()
+        start_time_str = BOT_START_TIME.strftime("%Y-%m-%d %H:%M:%S UTC")
+        
+        message = "📋 Информация о боте:\n\n"
+        message += f"🕐 Запущен: {start_time_str}\n"
+        
+        if commit_hash:
+            message += f"\n📝 Последний коммит:\n"
+            message += f"   Хеш: <code>{commit_hash}</code>\n"
+            if commit_date:
+                message += f"   Дата: {commit_date}\n"
+            if commit_message:
+                message += f"   Сообщение: {commit_message}\n"
+        else:
+            message += "\n⚠️ Информация о коммите недоступна\n"
+            message += "(возможно, бот запущен не из Git репозитория)"
     else:
-        message += "\n⚠️ Информация о коммите недоступна\n"
-        message += "(возможно, бот запущен не из Git репозитория)"
+        message = f"📊 Статистика по уроку: <b>{lesson_name}</b>\n\n"
     
     # Часть 2: Статистика
-    stats = get_user_stats(user_id)
+    stats = get_user_stats(user_id, lesson_id=lesson_id)
     vocab = Vocabulary(user_id=user_id)
-    vocab_count = vocab.count()
+    
+    if lesson_id is not None:
+        # Подсчитываем слова только в этом уроке
+        from database import get_connection, return_connection, get_param, USE_POSTGRES
+        conn = get_connection()
+        if conn:
+            try:
+                cursor = conn.cursor()
+                param = get_param()
+                count_query = f"SELECT COUNT(*) FROM vocabulary WHERE user_id = {param} AND lesson_id = {param}"
+                cursor.execute(count_query, (user_id, lesson_id))
+                count_result = cursor.fetchone()
+                vocab_count = count_result[0] if count_result else 0
+                return_connection(conn)
+            except Exception as e:
+                logger.error(f"Ошибка при подсчете слов урока: {e}", exc_info=True)
+                vocab_count = 0
+                return_connection(conn)
+        else:
+            vocab_count = 0
+    else:
+        vocab_count = vocab.count()
     
     total = stats['total_attempts']
     correct = stats['correct_attempts']
@@ -549,9 +605,6 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reading_accuracy = (reading_correct / reading_total * 100) if reading_total > 0 else 0
     
     message += f"""
-    
-📊 Ваша статистика:
-
 📚 Словарь:
    Слов в словаре: {vocab_count}
 
@@ -572,6 +625,29 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     
     await update.message.reply_text(message, parse_mode='HTML')
+
+@require_tracked_user
+async def list_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать список всех уроков"""
+    from database import get_all_lessons
+    
+    lessons = get_all_lessons()
+    
+    if not lessons:
+        await update.message.reply_text(
+            "📚 Уроков пока нет.\n\n"
+            "Создайте урок командой /add_words Название урока"
+        )
+        return
+    
+    message = f"📚 Список уроков ({len(lessons)}):\n\n"
+    
+    for i, lesson in enumerate(lessons, 1):
+        message += f"{i}. {lesson['name']}\n"
+    
+    message += "\n💡 Используйте /info Название урока для просмотра статистики по уроку"
+    
+    await update.message.reply_text(message)
 
 @require_tracked_user
 async def get_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1009,6 +1085,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("info", info_command))
+    application.add_handler(CommandHandler("lessons", list_lessons))
     application.add_handler(CommandHandler("get_words", get_words))
     application.add_handler(CommandHandler("reset_stats", reset_stats))
     application.add_handler(CommandHandler("level", level_command))

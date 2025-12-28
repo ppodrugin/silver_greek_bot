@@ -257,26 +257,76 @@ async def handle_training_command(update: Update, context: ContextTypes.DEFAULT_
     user_id = update.effective_user.id
     state = get_user_state(user_id)
     
+    # Проверяем, передан ли параметр урока
+    lesson_name = None
+    lesson_id = None
+    if context.args and len(context.args) > 0:
+        lesson_name = ' '.join(context.args).strip()
+        from database import get_lesson_id
+        lesson_id = get_lesson_id(lesson_name)
+        
+        if lesson_id is None:
+            await update.message.reply_text(
+                f"❌ Урок '{lesson_name}' не найден!\n\n"
+                "Используйте команду без параметра для тренировки всех слов или укажите существующий урок."
+            )
+            return
+    
     vocab = Vocabulary(user_id=user_id)
-    if vocab.count() == 0:
-        await update.message.reply_text(
-            "❌ Словарь пуст! Сначала добавьте слова командой /add_words"
-        )
-        return
+    
+    # Проверяем наличие слов (с учетом урока, если указан)
+    if lesson_id is not None:
+        # Проверяем количество слов в уроке
+        from database import get_connection, return_connection, get_param, USE_POSTGRES
+        conn = get_connection()
+        if conn:
+            try:
+                cursor = conn.cursor()
+                param = get_param()
+                count_query = f"SELECT COUNT(*) FROM vocabulary WHERE user_id = {param} AND lesson_id = {param}"
+                cursor.execute(count_query, (user_id, lesson_id))
+                count_result = cursor.fetchone()
+                if USE_POSTGRES:
+                    word_count = count_result[0] if count_result else 0
+                else:
+                    word_count = count_result[0] if count_result else 0
+                return_connection(conn)
+                
+                if word_count == 0:
+                    await update.message.reply_text(
+                        f"❌ В уроке '{lesson_name}' нет слов!\n\n"
+                        "Добавьте слова в этот урок командой /add_words"
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"Ошибка при проверке слов урока: {e}", exc_info=True)
+                return_connection(conn)
+        else:
+            await update.message.reply_text("❌ Ошибка подключения к базе данных")
+            return
+    else:
+        if vocab.count() == 0:
+            await update.message.reply_text(
+                "❌ Словарь пуст! Сначала добавьте слова командой /add_words"
+            )
+            return
     
     state['mode'] = 'training'
-    state['data'] = {}
+    state['data'] = {'lesson_id': lesson_id, 'lesson_name': lesson_name}
     
-    logger.info(f"Тренировка начата для user_id={user_id}, mode={state['mode']}")
+    logger.info(f"Тренировка начата для user_id={user_id}, lesson_id={lesson_id}, lesson_name={lesson_name}")
     
-    await update.message.reply_text(
-        "🎯 Тренировка слов начата!\n\n"
+    message = "🎯 Тренировка слов начата!\n\n"
+    if lesson_name:
+        message += f"📚 Урок: <b>{lesson_name}</b>\n\n"
+    message += (
         "Бот будет показывать слова на русском.\n"
         "Вы произносите их на греческом голосом.\n\n"
         "💡 Чтобы пропустить слово, скажите: <b>δεν ξέρω</b> (не знаю)\n\n"
-        "Используйте /cancel для выхода из режима тренировки.",
-        parse_mode='HTML'
+        "Используйте /cancel для выхода из режима тренировки."
     )
+    
+    await update.message.reply_text(message, parse_mode='HTML')
     
     # Отправляем первое слово
     await send_next_training_word(update, context)

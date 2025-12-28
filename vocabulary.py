@@ -151,13 +151,14 @@ class Vocabulary:
         
         return (added, skipped)
     
-    def get_random_word(self, stats_user_id=None):
+    def get_random_word(self, stats_user_id=None, lesson_id=None):
         """
         Возвращает случайное слово из словаря пользователя
         
         Args:
             stats_user_id: ID пользователя для фильтрации по статистике (опционально, для отслеживаемых пользователей)
                           Если указан, выбираются слова где (successful - unsuccessful) < 3
+            lesson_id: ID урока для фильтрации (опционально). Если указан, выбираются только слова этого урока
         
         Returns:
             tuple: (greek, russian) или None
@@ -174,33 +175,47 @@ class Vocabulary:
             cursor = conn.cursor()
             param = get_param()
             
-            # Сначала проверяем, есть ли вообще слова у пользователя
-            count_query = f"SELECT COUNT(*) as count FROM vocabulary WHERE user_id = {param}"
-            cursor.execute(count_query, (self.user_id,))
+            # Формируем условия WHERE
+            where_conditions = [f"user_id = {param}"]
+            query_params = [self.user_id]
+            
+            # Добавляем фильтр по уроку, если указан
+            if lesson_id is not None:
+                where_conditions.append(f"lesson_id = {param}")
+                query_params.append(lesson_id)
+            
+            where_clause = " AND ".join(where_conditions)
+            
+            # Сначала проверяем, есть ли вообще слова у пользователя с учетом фильтров
+            count_query = f"SELECT COUNT(*) as count FROM vocabulary WHERE {where_clause}"
+            cursor.execute(count_query, tuple(query_params))
             count_result = cursor.fetchone()
             if USE_POSTGRES:
                 total_words = count_result[0] if count_result else 0
             else:
                 total_words = count_result['count'] if count_result else 0
             
-            logger.debug(f"Всего слов для user_id={self.user_id}: {total_words}")
+            logger.debug(f"Всего слов для user_id={self.user_id}, lesson_id={lesson_id}: {total_words}")
             
             if total_words == 0:
-                logger.warning(f"Словарь пуст для user_id={self.user_id}")
+                logger.warning(f"Словарь пуст для user_id={self.user_id}, lesson_id={lesson_id}")
                 return None
             
             # Если stats_user_id указан (для отслеживаемых пользователей), фильтруем слова по статистике
             if stats_user_id:
+                # Добавляем условие по статистике
+                where_conditions_with_stats = where_conditions + [f"(successful - unsuccessful < 3)"]
+                where_clause_with_stats = " AND ".join(where_conditions_with_stats)
+                
                 # Выбираем только слова пользователя, где (successful - unsuccessful) < 3
                 query = f"""
                 SELECT greek, russian 
                 FROM vocabulary
-                WHERE user_id = {param} 
-                AND (successful - unsuccessful < 3)
+                WHERE {where_clause_with_stats}
                 ORDER BY RANDOM() 
                 LIMIT 1
                 """
-                cursor.execute(query, (self.user_id,))
+                cursor.execute(query, tuple(query_params))
                 result = cursor.fetchone()
                 
                 if result:
@@ -213,9 +228,9 @@ class Vocabulary:
                 
                 # Если для отслеживаемого пользователя не нашлось подходящих слов по статистике,
                 # возвращаем любое случайное из его словаря (fallback)
-                logger.debug(f"Не найдено слов с (successful - unsuccessful) < 3 для user_id={self.user_id}, используем fallback")
-                fallback_query = f"SELECT greek, russian FROM vocabulary WHERE user_id = {param} ORDER BY RANDOM() LIMIT 1"
-                cursor.execute(fallback_query, (self.user_id,))
+                logger.debug(f"Не найдено слов с (successful - unsuccessful) < 3 для user_id={self.user_id}, lesson_id={lesson_id}, используем fallback")
+                fallback_query = f"SELECT greek, russian FROM vocabulary WHERE {where_clause} ORDER BY RANDOM() LIMIT 1"
+                cursor.execute(fallback_query, tuple(query_params))
                 result = cursor.fetchone()
                 if result:
                     if USE_POSTGRES:
@@ -225,12 +240,12 @@ class Vocabulary:
                         logger.debug(f"Fallback: найдено слово {result['greek']}")
                         return (result['greek'], result['russian'])
                 else:
-                    logger.error(f"Fallback тоже не нашел слов для user_id={self.user_id}, хотя count показал {total_words}")
+                    logger.error(f"Fallback тоже не нашел слов для user_id={self.user_id}, lesson_id={lesson_id}, хотя count показал {total_words}")
                     return None
             else:
                 # Обычный случайный выбор из словаря пользователя
-                query = f"SELECT greek, russian FROM vocabulary WHERE user_id = {param} ORDER BY RANDOM() LIMIT 1"
-                cursor.execute(query, (self.user_id,))
+                query = f"SELECT greek, russian FROM vocabulary WHERE {where_clause} ORDER BY RANDOM() LIMIT 1"
+                cursor.execute(query, tuple(query_params))
                 result = cursor.fetchone()
                 
                 if result:
@@ -241,7 +256,7 @@ class Vocabulary:
                         logger.debug(f"Найдено случайное слово: {result['greek']}")
                         return (result['greek'], result['russian'])
                 else:
-                    logger.error(f"Не найдено слов для user_id={self.user_id}, хотя count показал {total_words}")
+                    logger.error(f"Не найдено слов для user_id={self.user_id}, lesson_id={lesson_id}, хотя count показал {total_words}")
                     return None
             
         except Exception as e:
@@ -309,12 +324,13 @@ class Vocabulary:
             if conn:
                 return_connection(conn)
     
-    def reset_user_statistics(self, user_id):
+    def reset_user_statistics(self, user_id, lesson_id=None):
         """
         Сбрасывает статистику по словам для пользователя
         
         Args:
             user_id: ID пользователя
+            lesson_id: ID урока (опционально). Если указан, статистика сбрасывается только для слов этого урока
         
         Returns:
             int: количество обновленных записей
@@ -326,8 +342,19 @@ class Vocabulary:
         try:
             cursor = conn.cursor()
             param = get_param()
-            update_query = f"UPDATE vocabulary SET successful = 0, unsuccessful = 0 WHERE user_id = {param}"
-            cursor.execute(update_query, (user_id,))
+            
+            # Формируем условия WHERE
+            where_conditions = [f"user_id = {param}"]
+            query_params = [user_id]
+            
+            # Добавляем фильтр по уроку, если указан
+            if lesson_id is not None:
+                where_conditions.append(f"lesson_id = {param}")
+                query_params.append(lesson_id)
+            
+            where_clause = " AND ".join(where_conditions)
+            update_query = f"UPDATE vocabulary SET successful = 0, unsuccessful = 0 WHERE {where_clause}"
+            cursor.execute(update_query, tuple(query_params))
             updated_count = cursor.rowcount
             conn.commit()
             return updated_count

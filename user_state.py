@@ -30,11 +30,15 @@ def get_user_state(user_id):
         user_states[user_id] = {'mode': None, 'data': {}}
     return user_states[user_id]
 
-def get_user_stats(user_id):
+def get_user_stats(user_id, lesson_id=None):
     """
     Получает статистику пользователя.
     Статистика тренировки слов берется из базы данных.
     Статистика чтения текста хранится в памяти.
+    
+    Args:
+        user_id: ID пользователя
+        lesson_id: ID урока (опционально). Если указан, статистика фильтруется по уроку
     """
     # Инициализируем статистику чтения текста в памяти
     if user_id not in text_reading_stats:
@@ -50,15 +54,26 @@ def get_user_stats(user_id):
             cursor = conn.cursor()
             param = get_param()
             
-            # Суммируем successful и unsuccessful для всех слов пользователя
+            # Формируем условия WHERE
+            where_conditions = [f"user_id = {param}"]
+            query_params = [user_id]
+            
+            # Добавляем фильтр по уроку, если указан
+            if lesson_id is not None:
+                where_conditions.append(f"lesson_id = {param}")
+                query_params.append(lesson_id)
+            
+            where_clause = " AND ".join(where_conditions)
+            
+            # Суммируем successful и unsuccessful для слов пользователя (с учетом урока, если указан)
             query = f"""
             SELECT 
                 COALESCE(SUM(successful), 0) as total_successful,
                 COALESCE(SUM(unsuccessful), 0) as total_unsuccessful
             FROM vocabulary
-            WHERE user_id = {param}
+            WHERE {where_clause}
             """
-            cursor.execute(query, (user_id,))
+            cursor.execute(query, tuple(query_params))
             result = cursor.fetchone()
             
             if result:
@@ -75,7 +90,7 @@ def get_user_stats(user_id):
     except Exception as e:
         logger.error(f"Ошибка при получении статистики тренировки слов из БД: {e}", exc_info=True)
     
-    # Статистика чтения текста из памяти
+    # Статистика чтения текста из памяти (не фильтруется по уроку)
     reading_stats = text_reading_stats[user_id]
     
     # Общая статистика (тренировка + чтение)
@@ -120,14 +135,17 @@ async def send_next_training_word(update, context):
         state['mode'] = None
         return
     
+    # Получаем lesson_id из state, если он есть
+    lesson_id = state.get('data', {}).get('lesson_id')
+    
     # Если пользователь в списке отслеживаемых, используем умный выбор слов
     is_tracked = is_tracked_user(user_id)
-    logger.debug(f"Пользователь отслеживается: {is_tracked}")
+    logger.debug(f"Пользователь отслеживается: {is_tracked}, lesson_id={lesson_id}")
     
     if is_tracked:
-        word = vocab.get_random_word(stats_user_id=user_id)
+        word = vocab.get_random_word(stats_user_id=user_id, lesson_id=lesson_id)
     else:
-        word = vocab.get_random_word()
+        word = vocab.get_random_word(lesson_id=lesson_id)
     
     if not word:
         logger.warning(f"Не удалось получить слово для user_id={user_id}, хотя count={word_count}")

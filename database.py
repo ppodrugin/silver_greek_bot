@@ -583,3 +583,35 @@ def get_lesson_id(lesson_name):
     finally:
         if conn:
             return_connection(conn)
+
+def get_all_lessons():
+    """
+    Получает список всех уроков из базы данных
+    
+    Returns:
+        list: Список словарей с информацией об уроках [{'id': int, 'name': str}, ...]
+    """
+    conn = get_connection()
+    if not conn:
+        return []
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name FROM lessons ORDER BY name")
+        results = cursor.fetchall()
+        
+        lessons = []
+        for row in results:
+            if USE_POSTGRES:
+                lessons.append({'id': row[0], 'name': row[1]})
+            else:
+                lessons.append({'id': row['id'], 'name': row['name']})
+        
+        return lessons
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка уроков: {e}", exc_info=True)
+        return []
+    finally:
+        if conn:
+            return_connection(conn)
