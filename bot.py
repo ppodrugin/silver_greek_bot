@@ -131,18 +131,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /reset_stats - Сбросить статистику по словам
 /get_words - Экспортировать словарь в CSV
 /my_id - Показать свой User ID
-
-🎤 Голосовые команды:
-Можно сказать голосом вместо команд:
-• "тренировка" - начать тренировку
-• "добавить слова" - добавить слова
-• "чтение текста" - режим чтения
-• "генерация" - генерация предложений
-• "помощь" - справка
-• "отмена" - отменить операцию
-
-💡 Альтернативные команды на латинице:
-/trenirovka, /dobavit_slova, /chtenie, /generatsiya, /pomosh, /otmena
 """
     
     if is_super:
@@ -175,23 +163,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1️⃣ /add_words - Добавление слов в словарь
    Формат 1: отправьте "слово,перевод"
    Формат 2: отправьте многострочный текст (слово\\nперевод\\n\\n)
-   🎤 Можно сказать голосом: "добавить слова"
 
 2️⃣ /training - Тренировка слов
    Бот будет показывать слова из словаря, вы произносите их на греческом
-   🎤 Можно сказать голосом: "тренировка"
 
 3️⃣ /read_text - Чтение текста
    Отправьте текст на греческом, затем произнесите его голосом
-   🎤 Можно сказать голосом: "чтение текста"
 
 4️⃣ /ai - Генерация предложений
    Опишите задание (например: "сгенери 50 предложений с винительным падежом")
    Бот сгенерирует предложения и начнет тренировку
-   🎤 Можно сказать голосом: "генерация"
 
 5️⃣ /info - Показать информацию о версии бота и статистику
-   🎤 Можно сказать голосом: "информация" или "статистика"
 
 6️⃣ /get_words - Экспортировать все слова из словаря в формате CSV
 
@@ -200,14 +183,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 8️⃣ /my_id - Показать свой User ID (для добавления в список отслеживаемых)
 
 9️⃣ /cancel - Отменить текущую операцию
-   🎤 Можно сказать голосом: "отмена" или "отменить"
-
-🎤 Голосовые команды:
-Вы можете использовать голосовые команды вместо текстовых!
-Просто скажите команду голосом, когда режим не активен.
-
-💡 Альтернативные команды на латинице:
-/trenirovka, /dobavit_slova, /chtenie, /generatsiya, /pomosh, /otmena
 """
     
     # Команды управления пользователями только для администраторов
@@ -705,13 +680,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик голосовых сообщений"""
     from database import is_tracked_user, is_superuser
-    from utils import recognize_voice_command, match_voice_command
-    from commands import (
-        handle_add_word_command,
-        handle_training_command,
-        handle_read_text_command,
-        handle_ai_generate_command
-    )
     
     user_id = update.effective_user.id
     
@@ -729,76 +697,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = get_user_state(user_id)
     current_mode = state.get('mode')
     
-    # Если режим не активен, проверяем, не является ли это голосовой командой
+    # Если режим не активен, сообщаем пользователю
     if not current_mode:
-        await update.message.reply_chat_action(ChatAction.TYPING)
-        
-        # Получаем аудио файл
-        voice_file = await context.bot.get_file(update.message.voice.file_id)
-        audio_path = f"temp_audio_command_{user_id}.ogg"
-        await voice_file.download_to_drive(audio_path)
-        
-        try:
-            # Распознаем команду на русском языке
-            recognized_text = recognize_voice_command(audio_path, language='ru-RU')
-            
-            if recognized_text:
-                # Маппинг голосовых команд на функции
-                voice_commands = {
-                    'тренировка': handle_training_command,
-                    'тренировки': handle_training_command,
-                    'начать тренировку': handle_training_command,
-                    'добавить слова': handle_add_word_command,
-                    'добавь слова': handle_add_word_command,
-                    'добавить слово': handle_add_word_command,
-                    'чтение текста': handle_read_text_command,
-                    'читать текст': handle_read_text_command,
-                    'чтение': handle_read_text_command,
-                    'генерация': handle_ai_generate_command,
-                    'генерация предложений': handle_ai_generate_command,
-                    'сгенерировать': handle_ai_generate_command,
-                    'помощь': help_command,
-                    'справка': help_command,
-                    'информация': info_command,
-                    'статистика': info_command,
-                    'отмена': cancel,
-                    'отменить': cancel,
-                    'стоп': cancel,
-                    'остановить': cancel
-                }
-                
-                matched_command = match_voice_command(recognized_text, voice_commands)
-                
-                if matched_command:
-                    logger.info(f"🎤 Распознана голосовая команда: '{recognized_text}' -> '{matched_command}'")
-                    await voice_commands[matched_command](update, context)
-                    return
-                else:
-                    logger.debug(f"Голосовое сообщение не распознано как команда: '{recognized_text}'")
-                    await update.message.reply_text(
-                        f"Не распознана команда. Вы сказали: '{recognized_text}'\n\n"
-                        "Доступные голосовые команды:\n"
-                        "• тренировка\n"
-                        "• добавить слова\n"
-                        "• чтение текста\n"
-                        "• генерация\n"
-                        "• помощь\n"
-                        "• отмена"
-                    )
-                    return
-        except Exception as e:
-            logger.error(f"Ошибка при обработке голосовой команды: {e}", exc_info=True)
-        finally:
-            # Удаляем временный файл
-            if os.path.exists(audio_path):
-                try:
-                    os.remove(audio_path)
-                except Exception as e:
-                    logger.warning(f"Не удалось удалить временный файл {audio_path}: {e}")
-        
-        # Если команда не распознана, сообщаем пользователю
         await update.message.reply_text(
-            "Не удалось распознать команду. Попробуйте использовать текстовые команды или повторите голосовую команду."
+            "Сначала запустите тренировку (/training), чтение текста (/read_text) или генерацию (/ai)"
         )
         return
     
@@ -1122,14 +1024,6 @@ def main():
     application.add_handler(CommandHandler("read_text", handle_read_text_command))
     application.add_handler(CommandHandler("ai", handle_ai_generate_command))
     application.add_handler(CommandHandler("ai_generate", handle_ai_generate_command))  # Старая команда для обратной совместимости
-    
-    # Альтернативные команды на латинице (для удобства)
-    application.add_handler(CommandHandler("trenirovka", handle_training_command))
-    application.add_handler(CommandHandler("dobavit_slova", handle_add_word_command))
-    application.add_handler(CommandHandler("chtenie", handle_read_text_command))
-    application.add_handler(CommandHandler("generatsiya", handle_ai_generate_command))
-    application.add_handler(CommandHandler("pomosh", help_command))
-    application.add_handler(CommandHandler("otmena", cancel))
     
     # Регистрируем обработчики сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
