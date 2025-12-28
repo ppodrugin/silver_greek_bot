@@ -6,8 +6,8 @@ import os
 import re
 import subprocess
 from datetime import datetime
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 from telegram.constants import ChatAction
 
 from config import TELEGRAM_BOT_TOKEN
@@ -43,7 +43,7 @@ def require_tracked_user(func):
                 "⚠️ Вы не зарегистрированы в системе.\n\n"
                 "Для использования бота необходимо обратиться к администратору "
                 "для добавления вас в список отслеживаемых пользователей.\n\n"
-                "Используйте команду /my_id чтобы узнать свой User ID и передать его администратору."
+                "Используйте команду /add_me Ваше имя для запроса добавления в систему."
             )
             await update.message.reply_text(message)
             return
@@ -76,40 +76,158 @@ def require_admin(func):
     
     return wrapper
 
-async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать свой user_id (доступно всем для получения ID для регистрации)"""
-    from database import add_user as db_add_user, is_tracked_user
+async def add_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запрос на добавление пользователя в систему"""
+    from database import get_admins, is_tracked_user, add_user as db_add_user
     
     user = update.effective_user
     user_id = user.id
     username = user.username
     
-    # Обновляем username в БД, если пользователь отслеживается
+    # Проверяем, не зарегистрирован ли уже пользователь
     if is_tracked_user(user_id):
-        db_add_user(user_id, username=username, is_tracked=True)
+        await update.message.reply_text(
+            "✅ Вы уже зарегистрированы в системе!\n\n"
+            "Можете использовать все функции бота."
+        )
+        return
     
-    message = f"🆔 Ваш User ID: <code>{user_id}</code>\n\n"
+    # Получаем имя из параметров команды
+    if not context.args or len(context.args) == 0:
+        await update.message.reply_text(
+            "❌ Не указано имя!\n\n"
+            "Используйте команду так: /add_me Ваше имя\n\n"
+            "Например: /add_me Иван"
+        )
+        return
     
+    name = ' '.join(context.args).strip()
+    
+    # Получаем список администраторов
+    admins = get_admins()
+    
+    if not admins:
+        await update.message.reply_text(
+            "❌ В системе нет администраторов.\n\n"
+            "Обратитесь к разработчику бота."
+        )
+        return
+    
+    # Создаем inline кнопку для администраторов
+    # Используем | как разделитель, так как имя может содержать подчеркивания
+    keyboard = []
+    callback_data = f"add_user_{user_id}|{name}"
+    button_text = f"✅ Добавить {name} (ID: {user_id})"
+    keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Формируем сообщение для администраторов
+    admin_message = (
+        f"📝 Запрос на добавление пользователя:\n\n"
+        f"👤 Имя: <b>{name}</b>\n"
+        f"🆔 User ID: <code>{user_id}</code>\n"
+    )
     if username:
-        message += f"👤 Username: @{username}\n\n"
-    else:
-        message += "👤 Username: не установлен\n\n"
+        admin_message += f"📱 Username: @{username}\n"
     
-    if not is_tracked_user(user_id):
-        message += (
-            "⚠️ Вы не зарегистрированы в системе.\n\n"
-            "Для использования бота необходимо обратиться к администратору "
-            "для добавления вас в список отслеживаемых пользователей.\n\n"
-            "Передайте администратору ваш User ID, указанный выше."
+    admin_message += "\nНажмите на кнопку ниже, чтобы добавить пользователя:"
+    
+    # Отправляем сообщение всем администраторам
+    sent_count = 0
+    for admin in admins:
+        try:
+            await context.bot.send_message(
+                chat_id=admin['user_id'],
+                text=admin_message,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            sent_count += 1
+        except Exception as e:
+            logger.error(f"Не удалось отправить сообщение администратору {admin['user_id']}: {e}")
+    
+    if sent_count > 0:
+        await update.message.reply_text(
+            f"✅ Ваш запрос отправлен администраторам!\n\n"
+            f"Вы получите уведомление, когда вас добавят в систему."
         )
     else:
-        message += (
-            "✅ Вы зарегистрированы в системе.\n\n"
-            "📝 Примечание: User ID - это число, которое не меняется. "
-            "Username (@имя) может меняться или отсутствовать."
+        await update.message.reply_text(
+            "❌ Не удалось отправить запрос администраторам.\n\n"
+            "Попробуйте позже или обратитесь к администратору напрямую."
         )
+
+async def handle_add_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик callback для добавления пользователя через inline кнопку"""
+    from database import is_superuser, add_user as db_add_user, is_tracked_user
     
-    await update.message.reply_text(message, parse_mode='HTML')
+    query = update.callback_query
+    await query.answer()
+    
+    # Проверяем, что это администратор
+    admin_id = query.from_user.id
+    if not is_superuser(admin_id):
+        await query.edit_message_text("❌ У вас нет прав администратора!")
+        return
+    
+    # Парсим callback_data: add_user_{user_id}|{name}
+    callback_data = query.data
+    if not callback_data.startswith("add_user_"):
+        await query.edit_message_text("❌ Неверный формат запроса!")
+        return
+    
+    # Убираем префикс "add_user_"
+    data_part = callback_data[len("add_user_"):]
+    
+    # Разделяем по |
+    if "|" not in data_part:
+        await query.edit_message_text("❌ Неверный формат запроса!")
+        return
+    
+    parts = data_part.split("|", 1)
+    if len(parts) != 2:
+        await query.edit_message_text("❌ Неверный формат запроса!")
+        return
+    
+    try:
+        target_user_id = int(parts[0])
+        name = parts[1]
+    except (ValueError, IndexError):
+        await query.edit_message_text("❌ Ошибка при обработке запроса!")
+        return
+    
+    # Проверяем, не добавлен ли уже пользователь
+    if is_tracked_user(target_user_id):
+        await query.edit_message_text(
+            f"ℹ️ Пользователь {target_user_id} уже добавлен в систему."
+        )
+        return
+    
+    # Добавляем пользователя
+    success = db_add_user(target_user_id, username=None, is_tracked=True)
+    
+    if success:
+        await query.edit_message_text(
+            f"✅ Пользователь <b>{name}</b> (ID: {target_user_id}) успешно добавлен в систему!",
+            parse_mode='HTML'
+        )
+        
+        # Отправляем уведомление пользователю
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=(
+                    f"✅ Вы были добавлены в систему!\n\n"
+                    f"Теперь вы можете использовать все функции бота.\n\n"
+                    f"Используйте /help для просмотра доступных команд."
+                )
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление пользователю {target_user_id}: {e}")
+    else:
+        await query.edit_message_text(
+            f"❌ Ошибка при добавлении пользователя {target_user_id}."
+        )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
@@ -185,7 +303,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 8️⃣ /reset_stats - Сбросить статистику по словам
    Можно указать урок: /reset_stats Название урока
 
-9️⃣ /my_id - Показать свой User ID (для добавления в список отслеживаемых)
+9️⃣ /add_me - Запросить добавление в систему (укажите ваше имя)
 
 🔟 /cancel - Отменить текущую операцию
 """
@@ -194,11 +312,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_super:
         help_text += """
 --- Команды администратора ---
-🔟 /add_user - Добавить пользователя в список отслеживаемых
-1️⃣1️⃣ /remove_user - Удалить пользователя из списка
-1️⃣2️⃣ /list_users - Показать список отслеживаемых пользователей
-1️⃣3️⃣ /add_admin - Назначить пользователя администратором
-1️⃣4️⃣ /remove_admin - Снять права администратора
+1️⃣1️⃣ /add_user - Добавить пользователя в список отслеживаемых
+1️⃣2️⃣ /remove_user - Удалить пользователя из списка
+1️⃣3️⃣ /list_users - Показать список отслеживаемых пользователей
+1️⃣4️⃣ /add_admin - Назначить пользователя администратором
+1️⃣5️⃣ /remove_admin - Снять права администратора
 """
     
     await update.message.reply_text(help_text)
@@ -728,7 +846,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Вы не зарегистрированы в системе.\n\n"
             "Для использования бота необходимо обратиться к администратору "
             "для добавления вас в список отслеживаемых пользователей.\n\n"
-            "Используйте команду /my_id чтобы узнать свой User ID и передать его администратору."
+            "Используйте команду /add_me Ваше имя для запроса добавления в систему."
         )
         await update.message.reply_text(message)
         return
@@ -770,7 +888,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Вы не зарегистрированы в системе.\n\n"
             "Для использования бота необходимо обратиться к администратору "
             "для добавления вас в список отслеживаемых пользователей.\n\n"
-            "Используйте команду /my_id чтобы узнать свой User ID и передать его администратору."
+            "Используйте команду /add_me Ваше имя для запроса добавления в систему."
         )
         await update.message.reply_text(message)
         return
@@ -1094,7 +1212,8 @@ def main():
     application.add_handler(CommandHandler("get_words", get_words))
     application.add_handler(CommandHandler("reset_stats", reset_stats))
     application.add_handler(CommandHandler("level", level_command))
-    application.add_handler(CommandHandler("my_id", my_id))
+    application.add_handler(CommandHandler("add_me", add_me))
+    application.add_handler(CallbackQueryHandler(handle_add_user_callback, pattern="^add_user_"))
     application.add_handler(CommandHandler("add_user", add_user))
     application.add_handler(CommandHandler("remove_user", remove_user))
     application.add_handler(CommandHandler("list_users", list_users))

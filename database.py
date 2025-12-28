@@ -425,6 +425,32 @@ def is_superuser(user_id):
         if conn:
             return_connection(conn)
 
+def get_admins():
+    """
+    Получает список всех администраторов
+    
+    Returns:
+        list: Список словарей с user_id и username администраторов
+    """
+    conn = get_connection()
+    if not conn:
+        return []
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, username FROM users WHERE is_admin = 1")
+        results = cursor.fetchall()
+        if USE_POSTGRES:
+            return [{'user_id': row[0], 'username': row[1]} for row in results]
+        else:
+            return [{'user_id': row['user_id'], 'username': row['username']} for row in results]
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка администраторов: {e}", exc_info=True)
+        return []
+    finally:
+        if conn:
+            return_connection(conn)
+
 def is_tracked_user(user_id):
     """
     Проверяет, отслеживается ли пользователь
