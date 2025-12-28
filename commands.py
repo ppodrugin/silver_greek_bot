@@ -52,23 +52,53 @@ async def handle_add_word_command(update: Update, context: ContextTypes.DEFAULT_
     user_id = update.effective_user.id
     state = get_user_state(user_id)
     
-    state['mode'] = 'add_word'
-    state['data'] = {'format': None}
+    # Проверяем, передан ли параметр урока
+    lesson_name = None
+    if context.args and len(context.args) > 0:
+        lesson_name = ' '.join(context.args).strip()
     
-    await update.message.reply_text(
-        "📝 Добавление слов в словарь\n\n"
-        "Можно добавить несколько слов за раз!\n\n"
-        "Формат 1 (CSV, несколько строк):\n"
-        "<code>слово1,перевод1\nслово2,перевод2\nслово3,перевод3</code>\n\n"
-        "Формат 2 (многострочный):\n"
-        "<code>слово1\nперевод1\n\nслово2\nперевод2</code>\n\n"
-        "Или /cancel для отмены",
-        parse_mode='HTML'
-    )
+    state['mode'] = 'add_word'
+    state['data'] = {'format': None, 'lesson_name': lesson_name}
+    
+    if lesson_name:
+        await update.message.reply_text(
+            f"📝 Добавление слов в словарь\n\n"
+            f"📚 Урок: <b>{lesson_name}</b>\n\n"
+            "Можно добавить несколько слов за раз!\n\n"
+            "Формат 1 (CSV, несколько строк):\n"
+            "<code>слово1,перевод1\nслово2,перевод2\nслово3,перевод3</code>\n\n"
+            "Формат 2 (многострочный):\n"
+            "<code>слово1\nперевод1\n\nслово2\nперевод2</code>\n\n"
+            "Или /cancel для отмены",
+            parse_mode='HTML'
+        )
+    else:
+        await update.message.reply_text(
+            "📝 Добавление слов в словарь\n\n"
+            "⚠️ Не указан урок! Используйте команду так:\n"
+            "<code>/add_words Название урока</code>\n\n"
+            "Например: <code>/add_words Урок 1</code>\n\n"
+            "Или /cancel для отмены",
+            parse_mode='HTML'
+        )
+        state['mode'] = None
 
 async def handle_add_word(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     """Обработка добавления слов (несколько слов за раз)"""
     user_id = update.effective_user.id
+    state = get_user_state(user_id)
+    lesson_name = state.get('data', {}).get('lesson_name')
+    
+    # Проверяем, что урок указан
+    if not lesson_name:
+        await update.message.reply_text(
+            "❌ Не указан урок! Используйте команду так:\n"
+            "<code>/add_words Название урока</code>\n\n"
+            "Например: <code>/add_words Урок 1</code>",
+            parse_mode='HTML'
+        )
+        state['mode'] = None
+        return
     
     # Валидация длины текста
     if len(text) > MAX_TEXT_LENGTH:
@@ -78,7 +108,27 @@ async def handle_add_word(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         )
         return
     
-    logger.debug(f"handle_add_word вызван для user_id={user_id}, text length={len(text)}")
+    logger.debug(f"handle_add_word вызван для user_id={user_id}, lesson_name={lesson_name}, text length={len(text)}")
+    
+    # Создаем урок (если уже существует - ошибка)
+    from database import create_lesson
+    try:
+        lesson_id = create_lesson(lesson_name)
+        if lesson_id is None:
+            await update.message.reply_text(
+                f"❌ Ошибка при создании урока '{lesson_name}'"
+            )
+            state['mode'] = None
+            return
+    except ValueError as e:
+        # Урок уже существует
+        await update.message.reply_text(
+            f"❌ {str(e)}\n\n"
+            "Используйте другое название урока или отмените операцию командой /cancel"
+        )
+        state['mode'] = None
+        return
+    
     vocab = Vocabulary(user_id=user_id)
     words_to_add = []
     errors = []
@@ -153,10 +203,11 @@ async def handle_add_word(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     if words_to_add:
         logger.debug(f"Слова для добавления: {words_to_add[:3]}...")  # Показываем первые 3
         try:
-            added, skipped = vocab.add_words_batch(words_to_add)
+            added, skipped = vocab.add_words_batch(words_to_add, lesson_id=lesson_id)
             logger.debug(f"Результат: added={added}, skipped={skipped}")
             
-            response = f"✅ Добавлено слов: {added}"
+            response = f"✅ Урок '{lesson_name}' создан\n"
+            response += f"✅ Добавлено слов: {added}"
             if skipped > 0:
                 response += f"\n⚠️ Пропущено дубликатов: {skipped}"
             response += f"\n\nВсего слов в словаре: {vocab.count()}"

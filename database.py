@@ -123,15 +123,43 @@ def init_database():
                 SELECT column_name 
                 FROM information_schema.columns 
                 WHERE table_name = 'vocabulary' 
-                AND column_name IN ('id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'created_at')
+                AND column_name IN ('id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'lesson_id', 'category_id', 'created_at')
             """)
             vocabulary_columns = {row[0] for row in cursor.fetchall()}
-            required_columns = {'id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'created_at'}
+            required_columns = {'id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'lesson_id', 'category_id', 'created_at'}
             
             if vocabulary_columns != required_columns:
                 missing = required_columns - vocabulary_columns
                 logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'vocabulary' отсутствуют колонки: {missing}")
                 logger.error("Структура таблицы не соответствует schema.sql")
+                return False
+            
+            # Проверяем таблицу lessons
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'lessons'
+                )
+            """)
+            lessons_exists = cursor.fetchone()[0]
+            
+            if not lessons_exists:
+                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'lessons' не существует!")
+                logger.error("Создайте таблицы вручную согласно schema.sql")
+                return False
+            
+            # Проверяем таблицу categories
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'categories'
+                )
+            """)
+            categories_exists = cursor.fetchone()[0]
+            
+            if not categories_exists:
+                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'categories' не существует!")
+                logger.error("Создайте таблицы вручную согласно schema.sql")
                 return False
             
             # Проверяем таблицу users
@@ -173,12 +201,26 @@ def init_database():
             
             cursor.execute("PRAGMA table_info(vocabulary)")
             vocabulary_columns = {row[1] for row in cursor.fetchall()}
-            required_columns = {'id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'created_at'}
+            required_columns = {'id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'lesson_id', 'category_id', 'created_at'}
             
             if vocabulary_columns != required_columns:
                 missing = required_columns - vocabulary_columns
                 logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'vocabulary' отсутствуют колонки: {missing}")
                 logger.error("Структура таблицы не соответствует schema.sql")
+                return False
+            
+            # Проверяем таблицу lessons
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='lessons'")
+            if not cursor.fetchone():
+                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'lessons' не существует!")
+                logger.error("Создайте таблицы вручную согласно schema.sql")
+                return False
+            
+            # Проверяем таблицу categories
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='categories'")
+            if not cursor.fetchone():
+                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'categories' не существует!")
+                logger.error("Создайте таблицы вручную согласно schema.sql")
                 return False
             
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
@@ -454,3 +496,90 @@ def remove_admin(user_id):
 def add_tracked_user(user_id, username=None, notes=None):
     """Добавляет пользователя в список отслеживаемых (для обратной совместимости)"""
     return add_user(user_id, username=username, is_tracked=True, notes=notes)
+
+def create_lesson(lesson_name):
+    """
+    Создает новый урок в базе данных
+    
+    Args:
+        lesson_name: Название урока
+    
+    Returns:
+        int: ID созданного урока или None в случае ошибки
+    
+    Raises:
+        ValueError: Если урок с таким именем уже существует
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+    
+    try:
+        cursor = conn.cursor()
+        param = get_param()
+        
+        # Проверяем, существует ли уже урок с таким именем
+        cursor.execute(f"SELECT id FROM lessons WHERE name = {param}", (lesson_name,))
+        existing = cursor.fetchone()
+        
+        if existing:
+            raise ValueError(f"Урок с именем '{lesson_name}' уже существует")
+        
+        # Создаем новый урок
+        if USE_POSTGRES:
+            cursor.execute(f"INSERT INTO lessons (name) VALUES ({param}) RETURNING id", (lesson_name,))
+            lesson_id = cursor.fetchone()[0]
+        else:
+            cursor.execute(f"INSERT INTO lessons (name) VALUES ({param})", (lesson_name,))
+            lesson_id = cursor.lastrowid
+        
+        conn.commit()
+        
+        logger.info(f"✅ Создан урок: {lesson_name} (ID: {lesson_id})")
+        return lesson_id
+        
+    except ValueError:
+        # Пробрасываем ValueError дальше
+        conn.rollback()
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при создании урока: {e}", exc_info=True)
+        conn.rollback()
+        return None
+    finally:
+        if conn:
+            return_connection(conn)
+
+def get_lesson_id(lesson_name):
+    """
+    Получает ID урока по его имени
+    
+    Args:
+        lesson_name: Название урока
+    
+    Returns:
+        int: ID урока или None если не найден
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+    
+    try:
+        cursor = conn.cursor()
+        param = get_param()
+        cursor.execute(f"SELECT id FROM lessons WHERE name = {param}", (lesson_name,))
+        result = cursor.fetchone()
+        
+        if result:
+            if USE_POSTGRES:
+                return result[0]
+            else:
+                return result['id']
+        return None
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении ID урока: {e}", exc_info=True)
+        return None
+    finally:
+        if conn:
+            return_connection(conn)

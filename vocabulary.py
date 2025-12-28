@@ -21,13 +21,14 @@ class Vocabulary:
         """Загружает словарь из базы данных (для совместимости)"""
         pass
     
-    def add_word(self, greek, russian):
+    def add_word(self, greek, russian, lesson_id=None):
         """
         Добавляет слово в словарь пользователя
         
         Args:
             greek: греческое слово
             russian: русский перевод
+            lesson_id: ID урока (опционально)
         
         Returns:
             bool: True если добавлено успешно, False если уже существует
@@ -52,8 +53,12 @@ class Vocabulary:
                 return False  # Слово уже существует
             
             # Добавляем слово
-            insert_query = f"INSERT INTO vocabulary (user_id, greek, russian) VALUES ({param}, {param}, {param})"
-            cursor.execute(insert_query, (self.user_id, greek, russian))
+            if lesson_id:
+                insert_query = f"INSERT INTO vocabulary (user_id, greek, russian, lesson_id) VALUES ({param}, {param}, {param}, {param})"
+                cursor.execute(insert_query, (self.user_id, greek, russian, lesson_id))
+            else:
+                insert_query = f"INSERT INTO vocabulary (user_id, greek, russian) VALUES ({param}, {param}, {param})"
+                cursor.execute(insert_query, (self.user_id, greek, russian))
             conn.commit()
             
             return True
@@ -66,12 +71,13 @@ class Vocabulary:
             if conn:
                 return_connection(conn)
     
-    def add_words_batch(self, words):
+    def add_words_batch(self, words, lesson_id=None):
         """
         Добавляет несколько слов за раз (оптимизированная версия)
         
         Args:
             words: список кортежей [(greek, russian), ...]
+            lesson_id: ID урока (опционально)
         
         Returns:
             tuple: (добавлено, пропущено_дубликатов)
@@ -118,12 +124,18 @@ class Vocabulary:
                     existing_words.add((greek, russian))
             
             # Добавляем только новые слова
-            words_to_insert = [(self.user_id, greek, russian) 
-                             for greek, russian in valid_words 
-                             if (greek, russian) not in existing_words]
+            if lesson_id:
+                words_to_insert = [(self.user_id, greek, russian, lesson_id) 
+                                 for greek, russian in valid_words 
+                                 if (greek, russian) not in existing_words]
+                insert_query = f"INSERT INTO vocabulary (user_id, greek, russian, lesson_id) VALUES ({param}, {param}, {param}, {param})"
+            else:
+                words_to_insert = [(self.user_id, greek, russian) 
+                                 for greek, russian in valid_words 
+                                 if (greek, russian) not in existing_words]
+                insert_query = f"INSERT INTO vocabulary (user_id, greek, russian) VALUES ({param}, {param}, {param})"
             
             if words_to_insert:
-                insert_query = f"INSERT INTO vocabulary (user_id, greek, russian) VALUES ({param}, {param}, {param})"
                 cursor.executemany(insert_query, words_to_insert)
                 added = len(words_to_insert)
             
