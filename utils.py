@@ -147,6 +147,24 @@ def normalize_greek_i_sound(text):
     
     return ' '.join(normalized_words)
 
+def normalize_greek_o_sound(text):
+    """
+    Нормализует различные варианты написания звука "о" в греческом языке.
+    Преобразует ω (омега) в ο (омикрон) для более гибкого сравнения при распознавании речи.
+    
+    ВАЖНО: Это делается только для сравнения произношения, не меняет правильное написание.
+    Используется для обработки ошибок распознавания речи, когда правильный звук записан другой буквой.
+    """
+    if not text:
+        return text
+    
+    result = text
+    # Заменяем ω (омега) на ο (омикрон), так как они звучат одинаково
+    result = result.replace('ω', 'ο')
+    result = result.replace('Ω', 'ο')  # Заглавная омега тоже
+    
+    return result
+
 def number_to_greek(num_str):
     """
     Преобразует число (строку) в греческое числительное
@@ -283,6 +301,13 @@ def word_similarity(word1, word2):
     word1_normalized_i = normalize_greek_i_sound(word1_no_accents)
     word2_normalized_i = normalize_greek_i_sound(word2_no_accents)
     
+    # Нормализуем варианты звука "о" (омега и омикрон)
+    word1_normalized_o = normalize_greek_o_sound(word1_normalized_i)
+    word2_normalized_o = normalize_greek_o_sound(word2_normalized_i)
+    
+    if word1_normalized_o == word2_normalized_o:
+        return 0.94  # Совпадает после нормализации омеги/омикрона
+    
     if word1_normalized_i == word2_normalized_i:
         return 0.92  # Совпадает после нормализации вариантов "и" - правильное произношение
     
@@ -402,6 +427,14 @@ def compare_texts_detailed(user_text, correct_text, threshold=0.85):
     if user_normalized_i == correct_normalized_i:
         return True, 0.98, []  # Почти идеальное совпадение, только разные буквы для звука "и"
     
+    # Нормализуем варианты звука "о" (омега и омикрон)
+    user_normalized_o = normalize_greek_o_sound(user_normalized_i)
+    correct_normalized_o = normalize_greek_o_sound(correct_normalized_i)
+    
+    # Проверяем совпадение после нормализации вариантов "о"
+    if user_normalized_o == correct_normalized_o:
+        return True, 0.97, []  # Почти идеальное совпадение, только разные буквы для звука "о"
+    
     # Разбиваем на слова
     user_words = user_normalized.split()
     correct_words = correct_normalized.split()
@@ -513,6 +546,14 @@ def compare_texts_sentences(user_text, correct_text, threshold=0.85):
     user_normalized_i = normalize_greek_i_sound(user_normalized)
     correct_normalized_i = normalize_greek_i_sound(correct_normalized)
     
+    # Нормализуем варианты звука "о" (омега и омикрон)
+    user_normalized_o = normalize_greek_o_sound(user_normalized_i)
+    correct_normalized_o = normalize_greek_o_sound(correct_normalized_i)
+    
+    # Нормализуем варианты звука "о" (омега и омикрон)
+    user_normalized_o = normalize_greek_o_sound(user_normalized_i)
+    correct_normalized_o = normalize_greek_o_sound(correct_normalized_i)
+    
     # Точное совпадение
     if user_normalized == correct_normalized:
         return True, 1.0
@@ -520,6 +561,10 @@ def compare_texts_sentences(user_text, correct_text, threshold=0.85):
     # Проверяем совпадение после нормализации вариантов "и"
     if user_normalized_i == correct_normalized_i:
         return True, 0.98
+    
+    # Проверяем совпадение после нормализации вариантов "о"
+    if user_normalized_o == correct_normalized_o:
+        return True, 0.97
     
     # Разбиваем на слова
     user_words = user_normalized.split()
@@ -619,6 +664,10 @@ def compare_texts(user_text, correct_text, threshold=0.85):
     user_normalized_i = normalize_greek_i_sound(user_normalized)
     correct_normalized_i = normalize_greek_i_sound(correct_normalized)
     
+    # Нормализуем варианты звука "о" (омега и омикрон)
+    user_normalized_o = normalize_greek_o_sound(user_normalized_i)
+    correct_normalized_o = normalize_greek_o_sound(correct_normalized_i)
+    
     # Точное совпадение (сначала проверяем без нормализации "и", потом с нормализацией)
     if user_normalized == correct_normalized:
         return True, 1.0
@@ -626,6 +675,10 @@ def compare_texts(user_text, correct_text, threshold=0.85):
     # Проверяем совпадение после нормализации вариантов "и"
     if user_normalized_i == correct_normalized_i:
         return True, 0.98  # Почти идеальное совпадение, только разные буквы для звука "и"
+    
+    # Проверяем совпадение после нормализации вариантов "о"
+    if user_normalized_o == correct_normalized_o:
+        return True, 0.97  # Почти идеальное совпадение, только разные буквы для звука "о"
     
     # Разбиваем на слова
     user_words = user_normalized.split()
