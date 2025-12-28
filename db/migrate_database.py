@@ -21,57 +21,37 @@ logger = logging.getLogger(__name__)
 # Добавляем путь к модулям проекта
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import get_connection, return_connection, USE_POSTGRES, get_param
+from database import get_connection, return_connection, get_param
 
 def check_column_exists(cursor, table_name, column_name):
     """Проверяет существование колонки в таблице"""
-    if USE_POSTGRES:
-        cursor.execute("""
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns 
-                WHERE table_name = %s AND column_name = %s
-            )
-        """, (table_name, column_name))
-        return cursor.fetchone()[0]
-    else:
-        # SQLite
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        columns = [row[1] for row in cursor.fetchall()]
-        return column_name in columns
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = %s AND column_name = %s
+        )
+    """, (table_name, column_name))
+    return cursor.fetchone()[0]
 
 def check_table_exists(cursor, table_name):
     """Проверяет существование таблицы"""
-    if USE_POSTGRES:
-        cursor.execute("""
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables 
-                WHERE table_name = %s
-            )
-        """, (table_name,))
-        return cursor.fetchone()[0]
-    else:
-        # SQLite
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-        return cursor.fetchone() is not None
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables 
+            WHERE table_name = %s
+        )
+    """, (table_name,))
+    return cursor.fetchone()[0]
 
 def check_foreign_key_exists(cursor, constraint_name, table_name):
     """Проверяет существование внешнего ключа"""
-    if USE_POSTGRES:
-        cursor.execute("""
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.table_constraints 
-                WHERE constraint_name = %s AND table_name = %s
-            )
-        """, (constraint_name, table_name))
-        return cursor.fetchone()[0]
-    else:
-        # SQLite не поддерживает именованные ограничения таким же образом
-        # Проверяем через PRAGMA foreign_key_list
-        cursor.execute(f"PRAGMA foreign_key_list({table_name})")
-        foreign_keys = cursor.fetchall()
-        # В SQLite проверка сложнее, для простоты возвращаем False
-        # и полагаемся на то, что внешние ключи будут добавлены при пересоздании таблицы
-        return False
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE constraint_name = %s AND table_name = %s
+        )
+    """, (constraint_name, table_name))
+    return cursor.fetchone()[0]
 
 def migrate_database():
     """Выполняет миграцию базы данных"""
@@ -88,38 +68,26 @@ def migrate_database():
         
         # 1. Создаем таблицу lessons
         logger.info("📋 Создание таблицы lessons...")
-        if USE_POSTGRES:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS lessons (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE
-                )
-            """)
-        else:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS lessons (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE
-                )
-            """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lessons (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                UNIQUE(user_id, name)
+            )
+        """)
         logger.info("✅ Таблица lessons создана")
         
         # 2. Создаем таблицу categories
         logger.info("📋 Создание таблицы categories...")
-        if USE_POSTGRES:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS categories (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE
-                )
-            """)
-        else:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS categories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE
-                )
-            """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                UNIQUE(user_id, name)
+            )
+        """)
         logger.info("✅ Таблица categories создана")
         
         # 3. Добавляем lesson_id в vocabulary
@@ -140,42 +108,37 @@ def migrate_database():
         else:
             logger.info("   Поле category_id уже существует")
         
-        # 5. Добавляем внешние ключи (только для PostgreSQL, SQLite требует пересоздания таблицы)
-        if USE_POSTGRES:
-            logger.info("📋 Проверка внешних ключей...")
-            
-            if not check_foreign_key_exists(cursor, 'vocabulary_lesson_id_fkey', 'vocabulary'):
-                logger.info("   Добавление внешнего ключа для lesson_id...")
-                cursor.execute("""
-                    ALTER TABLE vocabulary 
-                    ADD CONSTRAINT vocabulary_lesson_id_fkey 
-                    FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE SET NULL
-                """)
-                logger.info("✅ Внешний ключ для lesson_id добавлен")
-            else:
-                logger.info("   Внешний ключ для lesson_id уже существует")
-            
-            if not check_foreign_key_exists(cursor, 'vocabulary_category_id_fkey', 'vocabulary'):
-                logger.info("   Добавление внешнего ключа для category_id...")
-                cursor.execute("""
-                    ALTER TABLE vocabulary 
-                    ADD CONSTRAINT vocabulary_category_id_fkey 
-                    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
-                """)
-                logger.info("✅ Внешний ключ для category_id добавлен")
-            else:
-                logger.info("   Внешний ключ для category_id уже существует")
+        # 5. Добавляем внешние ключи
+        logger.info("📋 Проверка внешних ключей...")
+        
+        if not check_foreign_key_exists(cursor, 'vocabulary_lesson_id_fkey', 'vocabulary'):
+            logger.info("   Добавление внешнего ключа для lesson_id...")
+            cursor.execute("""
+                ALTER TABLE vocabulary 
+                ADD CONSTRAINT vocabulary_lesson_id_fkey 
+                FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE SET NULL
+            """)
+            logger.info("✅ Внешний ключ для lesson_id добавлен")
         else:
-            # SQLite: включаем поддержку внешних ключей
-            logger.info("📋 Включение поддержки внешних ключей для SQLite...")
-            cursor.execute("PRAGMA foreign_keys = ON")
-            logger.info("⚠️  Для SQLite внешние ключи должны быть определены при создании таблицы.")
-            logger.info("   Если нужно добавить внешние ключи, потребуется пересоздание таблицы.")
+            logger.info("   Внешний ключ для lesson_id уже существует")
+        
+        if not check_foreign_key_exists(cursor, 'vocabulary_category_id_fkey', 'vocabulary'):
+            logger.info("   Добавление внешнего ключа для category_id...")
+            cursor.execute("""
+                ALTER TABLE vocabulary 
+                ADD CONSTRAINT vocabulary_category_id_fkey 
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
+            """)
+            logger.info("✅ Внешний ключ для category_id добавлен")
+        else:
+            logger.info("   Внешний ключ для category_id уже существует")
         
         # 6. Создаем индексы
         logger.info("📋 Создание индексов...")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_vocabulary_lesson_id ON vocabulary(lesson_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_vocabulary_category_id ON vocabulary(category_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_user_id ON lessons(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_user_id ON categories(user_id)")
         logger.info("✅ Индексы созданы")
         
         conn.commit()
@@ -191,8 +154,7 @@ def migrate_database():
             return_connection(conn)
 
 if __name__ == "__main__":
-    logger.info("🚀 Запуск миграции базы данных...")
-    logger.info(f"📊 Тип БД: {'PostgreSQL' if USE_POSTGRES else 'SQLite'}")
+    logger.info("🚀 Запуск миграции базы данных PostgreSQL...")
     
     success = migrate_database()
     
@@ -202,4 +164,3 @@ if __name__ == "__main__":
     else:
         logger.error("❌ Миграция завершилась с ошибками!")
         sys.exit(1)
-

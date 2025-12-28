@@ -1,15 +1,19 @@
 CREATE TABLE IF NOT EXISTS lessons (
     id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    UNIQUE(user_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS categories (
     id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    UNIQUE(user_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS vocabulary (
-    id SERIAL PRIMARY KEY,  -- SQLite: AUTOINCREMENT, PostgreSQL: SERIAL
+    id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL,
     greek TEXT NOT NULL,
     russian TEXT NOT NULL,
@@ -36,6 +40,8 @@ CREATE INDEX IF NOT EXISTS idx_vocabulary_user_id ON vocabulary(user_id);
 CREATE INDEX IF NOT EXISTS idx_vocabulary_stats ON vocabulary(user_id, successful, unsuccessful);
 CREATE INDEX IF NOT EXISTS idx_vocabulary_lesson_id ON vocabulary(lesson_id);
 CREATE INDEX IF NOT EXISTS idx_vocabulary_category_id ON vocabulary(category_id);
+CREATE INDEX IF NOT EXISTS idx_lessons_user_id ON lessons(user_id);
+CREATE INDEX IF NOT EXISTS idx_categories_user_id ON categories(user_id);
 CREATE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id);
 CREATE INDEX IF NOT EXISTS idx_users_is_admin ON users(is_admin);
 CREATE INDEX IF NOT EXISTS idx_users_is_tracked ON users(is_tracked);

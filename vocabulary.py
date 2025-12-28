@@ -1,11 +1,11 @@
 """
-Работа со словарем через SQLite/PostgreSQL
+Работа со словарем через PostgreSQL
 Статистика хранится прямо в таблице vocabulary
 """
 import logging
 import random
 import os
-from database import get_connection, return_connection, get_param, USE_POSTGRES
+from database import get_connection, return_connection, get_param
 
 logger = logging.getLogger(__name__)
 
@@ -187,13 +187,10 @@ class Vocabulary:
             where_clause = " AND ".join(where_conditions)
             
             # Сначала проверяем, есть ли вообще слова у пользователя с учетом фильтров
-            count_query = f"SELECT COUNT(*) as count FROM vocabulary WHERE {where_clause}"
+            count_query = f"SELECT COUNT(*) FROM vocabulary WHERE {where_clause}"
             cursor.execute(count_query, tuple(query_params))
             count_result = cursor.fetchone()
-            if USE_POSTGRES:
-                total_words = count_result[0] if count_result else 0
-            else:
-                total_words = count_result['count'] if count_result else 0
+            total_words = count_result[0] if count_result else 0
             
             logger.debug(f"Всего слов для user_id={self.user_id}, lesson_id={lesson_id}: {total_words}")
             
@@ -219,12 +216,8 @@ class Vocabulary:
                 result = cursor.fetchone()
                 
                 if result:
-                    if USE_POSTGRES:
-                        logger.debug(f"Найдено слово по статистике: {result[0]}")
-                        return (result[0], result[1])
-                    else:
-                        logger.debug(f"Найдено слово по статистике: {result['greek']}")
-                        return (result['greek'], result['russian'])
+                    logger.debug(f"Найдено слово по статистике: {result[0]}")
+                    return (result[0], result[1])
                 
                 # Если для отслеживаемого пользователя не нашлось подходящих слов по статистике,
                 # возвращаем любое случайное из его словаря (fallback)
@@ -233,12 +226,8 @@ class Vocabulary:
                 cursor.execute(fallback_query, tuple(query_params))
                 result = cursor.fetchone()
                 if result:
-                    if USE_POSTGRES:
-                        logger.debug(f"Fallback: найдено слово {result[0]}")
-                        return (result[0], result[1])
-                    else:
-                        logger.debug(f"Fallback: найдено слово {result['greek']}")
-                        return (result['greek'], result['russian'])
+                    logger.debug(f"Fallback: найдено слово {result[0]}")
+                    return (result[0], result[1])
                 else:
                     logger.error(f"Fallback тоже не нашел слов для user_id={self.user_id}, lesson_id={lesson_id}, хотя count показал {total_words}")
                     return None
@@ -249,12 +238,8 @@ class Vocabulary:
                 result = cursor.fetchone()
                 
                 if result:
-                    if USE_POSTGRES:
-                        logger.debug(f"Найдено случайное слово: {result[0]}")
-                        return (result[0], result[1])
-                    else:
-                        logger.debug(f"Найдено случайное слово: {result['greek']}")
-                        return (result['greek'], result['russian'])
+                    logger.debug(f"Найдено случайное слово: {result[0]}")
+                    return (result[0], result[1])
                 else:
                     logger.error(f"Не найдено слов для user_id={self.user_id}, lesson_id={lesson_id}, хотя count показал {total_words}")
                     return None
@@ -382,10 +367,7 @@ class Vocabulary:
             cursor.execute(query, (self.user_id,))
             results = cursor.fetchall()
             
-            if USE_POSTGRES:
-                return [(row[0], row[1]) for row in results]
-            else:
-                return [(row['greek'], row['russian']) for row in results]
+            return [(row[0], row[1]) for row in results]
             
         except Exception as e:
             logger.error(f"Ошибка при получении всех слов: {e}", exc_info=True)
@@ -406,14 +388,11 @@ class Vocabulary:
         try:
             cursor = conn.cursor()
             param = get_param()
-            query = f"SELECT COUNT(*) as count FROM vocabulary WHERE user_id = {param}"
+            query = f"SELECT COUNT(*) FROM vocabulary WHERE user_id = {param}"
             cursor.execute(query, (self.user_id,))
             result = cursor.fetchone()
             
-            if USE_POSTGRES:
-                return result[0] if result else 0
-            else:
-                return result['count'] if result else 0
+            return result[0] if result else 0
             
         except Exception as e:
             logger.error(f"Ошибка при подсчете слов: {e}", exc_info=True)

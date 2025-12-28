@@ -377,7 +377,7 @@ async def reset_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lesson_id = None
     if context.args and len(context.args) > 0:
         lesson_name = ' '.join(context.args).strip()
-        lesson_id = get_lesson_id(lesson_name)
+        lesson_id = get_lesson_id(lesson_name, user_id)
         
         if lesson_id is None:
             await update.message.reply_text(
@@ -659,7 +659,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lesson_id = None
     if context.args and len(context.args) > 0:
         lesson_name = ' '.join(context.args).strip()
-        lesson_id = get_lesson_id(lesson_name)
+        lesson_id = get_lesson_id(lesson_name, user_id)
         
         if lesson_id is None:
             await update.message.reply_text(
@@ -695,7 +695,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = get_user_stats(user_id, lesson_id=lesson_id)
         
         # Подсчитываем слова только в этом уроке
-        from database import get_connection, return_connection, get_param, USE_POSTGRES
+        from database import get_connection, return_connection, get_param
         conn = get_connection()
         if conn:
             try:
@@ -771,7 +771,8 @@ async def list_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список всех уроков"""
     from database import get_all_lessons
     
-    lessons = get_all_lessons()
+    user_id = update.effective_user.id
+    lessons = get_all_lessons(user_id)
     
     if not lessons:
         await update.message.reply_text(

@@ -1,96 +1,67 @@
 """
-Работа с базой данных (SQLite для локальной разработки, PostgreSQL для продакшена)
-Унифицированный подход без различий между БД
+Работа с базой данных PostgreSQL
 """
 import logging
 import os
 
 logger = logging.getLogger(__name__)
 
-# Определяем, какую БД использовать
+# Проверяем наличие DATABASE_URL
 DATABASE_URL = os.getenv('DATABASE_URL')
-USE_POSTGRES = bool(DATABASE_URL)
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL не установлен! Установите переменную окружения DATABASE_URL для подключения к PostgreSQL")
 
-# Логируем информацию о выборе БД
-if USE_POSTGRES:
-    logger.info(f"✅ Используется PostgreSQL (DATABASE_URL найден: {DATABASE_URL[:20]}...)")
-    try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        from psycopg2.pool import ThreadedConnectionPool
-        
-        # Пул соединений для PostgreSQL
-        connection_pool = None
-        
-        def get_connection():
-            """Создает соединение с базой данных PostgreSQL"""
-            global connection_pool
-            
-            if connection_pool is None:
-                try:
-                    db_url = os.getenv('DATABASE_URL')
-                    logger.info(f"🔗 Подключение к PostgreSQL: {db_url[:30]}...")
-                    connection_pool = ThreadedConnectionPool(1, 5, db_url)
-                    logger.info("✅ Пул соединений PostgreSQL создан")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка создания пула соединений PostgreSQL: {e}", exc_info=True)
-                    return None
-            
-            try:
-                conn = connection_pool.getconn()
-                return conn
-            except Exception as e:
-                logger.error(f"❌ Ошибка получения соединения из пула: {e}", exc_info=True)
-                return None
-        
-        def return_connection(conn):
-            """Возвращает соединение в пул"""
-            global connection_pool
-            if connection_pool and conn:
-                try:
-                    connection_pool.putconn(conn)
-                except Exception as e:
-                    logger.error(f"Ошибка возврата соединения в пул: {e}", exc_info=True)
-    except ImportError:
-        logger.error("❌ psycopg2 не установлен! Установите: pip install psycopg2-binary")
-        USE_POSTGRES = False
+logger.info(f"✅ Используется PostgreSQL (DATABASE_URL найден: {DATABASE_URL[:20]}...)")
 
-if not USE_POSTGRES:
-    logger.info("✅ Используется SQLite (DATABASE_URL не установлен)")
-    import sqlite3
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    from psycopg2.pool import ThreadedConnectionPool
     
-    DB_DIR = os.path.dirname(os.path.abspath(__file__))
-    DB_PATH = os.path.join(DB_DIR, 'vocabulary.db')
+    # Пул соединений для PostgreSQL
+    connection_pool = None
     
     def get_connection():
-        """Создает соединение с базой данных SQLite"""
+        """Создает соединение с базой данных PostgreSQL"""
+        global connection_pool
+        
+        if connection_pool is None:
+            try:
+                db_url = os.getenv('DATABASE_URL')
+                logger.info(f"🔗 Подключение к PostgreSQL: {db_url[:30]}...")
+                connection_pool = ThreadedConnectionPool(1, 5, db_url)
+                logger.info("✅ Пул соединений PostgreSQL создан")
+            except Exception as e:
+                logger.error(f"❌ Ошибка создания пула соединений PostgreSQL: {e}", exc_info=True)
+                return None
+        
         try:
-            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-            conn = sqlite3.connect(DB_PATH, timeout=10.0)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
+            conn = connection_pool.getconn()
             return conn
         except Exception as e:
-            logger.error(f"Ошибка подключения к SQLite: {e}", exc_info=True)
-            logger.error(f"Путь к БД: {DB_PATH}")
+            logger.error(f"❌ Ошибка получения соединения из пула: {e}", exc_info=True)
             return None
     
     def return_connection(conn):
-        """Закрывает соединение SQLite"""
-        if conn:
+        """Возвращает соединение в пул"""
+        global connection_pool
+        if connection_pool and conn:
             try:
-                conn.close()
+                connection_pool.putconn(conn)
             except Exception as e:
-                logger.error(f"Ошибка закрытия соединения SQLite: {e}", exc_info=True)
+                logger.error(f"Ошибка возврата соединения в пул: {e}", exc_info=True)
+except ImportError:
+    logger.error("❌ psycopg2 не установлен! Установите: pip install psycopg2-binary")
+    raise
 
-# Универсальная функция для получения placeholder
+# Функция для получения placeholder (всегда '%s' для PostgreSQL)
 def get_param():
-    """Возвращает placeholder для параметров запроса"""
-    return '%s' if USE_POSTGRES else '?'
+    """Возвращает placeholder для параметров запроса PostgreSQL"""
+    return '%s'
 
 def init_database():
     """Проверяет подключение к базе данных и структуру таблиц"""
-    logger.info(f"🔍 Проверка подключения к БД: USE_POSTGRES={USE_POSTGRES}")
+    logger.info("🔍 Проверка подключения к PostgreSQL...")
     
     try:
         conn = get_connection()
@@ -104,143 +75,126 @@ def init_database():
         logger.info("📋 Проверка структуры базы данных...")
         
         # Проверяем таблицу vocabulary
-        if USE_POSTGRES:
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'vocabulary'
-                )
-            """)
-            vocabulary_exists = cursor.fetchone()[0]
-            
-            if not vocabulary_exists:
-                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'vocabulary' не существует!")
-                logger.error("Создайте таблицы вручную согласно schema.sql")
-                return False
-            
-            # Проверяем наличие необходимых колонок в vocabulary
-            cursor.execute("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = 'vocabulary' 
-                AND column_name IN ('id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'lesson_id', 'category_id', 'created_at')
-            """)
-            vocabulary_columns = {row[0] for row in cursor.fetchall()}
-            required_columns = {'id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'lesson_id', 'category_id', 'created_at'}
-            
-            if vocabulary_columns != required_columns:
-                missing = required_columns - vocabulary_columns
-                logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'vocabulary' отсутствуют колонки: {missing}")
-                logger.error("Структура таблицы не соответствует schema.sql")
-                return False
-            
-            # Проверяем таблицу lessons
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'lessons'
-                )
-            """)
-            lessons_exists = cursor.fetchone()[0]
-            
-            if not lessons_exists:
-                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'lessons' не существует!")
-                logger.error("Создайте таблицы вручную согласно schema.sql")
-                return False
-            
-            # Проверяем таблицу categories
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'categories'
-                )
-            """)
-            categories_exists = cursor.fetchone()[0]
-            
-            if not categories_exists:
-                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'categories' не существует!")
-                logger.error("Создайте таблицы вручную согласно schema.sql")
-                return False
-            
-            # Проверяем таблицу users
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'users'
-                )
-            """)
-            users_exists = cursor.fetchone()[0]
-            
-            if not users_exists:
-                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'users' не существует!")
-                logger.error("Создайте таблицы вручную согласно schema.sql")
-                return False
-            
-            # Проверяем наличие необходимых колонок в users
-            cursor.execute("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = 'users' 
-                AND column_name IN ('user_id', 'username', 'is_admin', 'is_tracked', 'added_at', 'notes')
-            """)
-            users_columns = {row[0] for row in cursor.fetchall()}
-            required_users_columns = {'user_id', 'username', 'is_admin', 'is_tracked', 'added_at', 'notes'}
-            
-            if users_columns != required_users_columns:
-                missing = required_users_columns - users_columns
-                logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'users' отсутствуют колонки: {missing}")
-                logger.error("Структура таблицы не соответствует schema.sql")
-                return False
-        else:
-            # SQLite проверка
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vocabulary'")
-            if not cursor.fetchone():
-                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'vocabulary' не существует!")
-                logger.error("Создайте таблицы вручную согласно schema.sql")
-                return False
-            
-            cursor.execute("PRAGMA table_info(vocabulary)")
-            vocabulary_columns = {row[1] for row in cursor.fetchall()}
-            required_columns = {'id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'lesson_id', 'category_id', 'created_at'}
-            
-            if vocabulary_columns != required_columns:
-                missing = required_columns - vocabulary_columns
-                logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'vocabulary' отсутствуют колонки: {missing}")
-                logger.error("Структура таблицы не соответствует schema.sql")
-                return False
-            
-            # Проверяем таблицу lessons
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='lessons'")
-            if not cursor.fetchone():
-                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'lessons' не существует!")
-                logger.error("Создайте таблицы вручную согласно schema.sql")
-                return False
-            
-            # Проверяем таблицу categories
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='categories'")
-            if not cursor.fetchone():
-                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'categories' не существует!")
-                logger.error("Создайте таблицы вручную согласно schema.sql")
-                return False
-            
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
-            if not cursor.fetchone():
-                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'users' не существует!")
-                logger.error("Создайте таблицы вручную согласно schema.sql")
-                return False
-            
-            cursor.execute("PRAGMA table_info(users)")
-            users_columns = {row[1] for row in cursor.fetchall()}
-            required_users_columns = {'user_id', 'username', 'is_admin', 'is_tracked', 'added_at', 'notes'}
-            
-            if users_columns != required_users_columns:
-                missing = required_users_columns - users_columns
-                logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'users' отсутствуют колонки: {missing}")
-                logger.error("Структура таблицы не соответствует schema.sql")
-                return False
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'vocabulary'
+            )
+        """)
+        vocabulary_exists = cursor.fetchone()[0]
         
-        db_type = "PostgreSQL" if USE_POSTGRES else "SQLite"
-        logger.info(f"✅ База данных {db_type} подключена")
+        if not vocabulary_exists:
+            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'vocabulary' не существует!")
+            logger.error("Создайте таблицы вручную согласно schema_postgres.sql")
+            return False
+        
+        # Проверяем наличие необходимых колонок в vocabulary
+        cursor.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'vocabulary' 
+            AND column_name IN ('id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'lesson_id', 'category_id', 'created_at')
+        """)
+        vocabulary_columns = {row[0] for row in cursor.fetchall()}
+        required_columns = {'id', 'user_id', 'greek', 'russian', 'successful', 'unsuccessful', 'lesson_id', 'category_id', 'created_at'}
+        
+        if vocabulary_columns != required_columns:
+            missing = required_columns - vocabulary_columns
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'vocabulary' отсутствуют колонки: {missing}")
+            logger.error("Структура таблицы не соответствует schema_postgres.sql")
+            return False
+        
+        # Проверяем таблицу lessons
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'lessons'
+            )
+        """)
+        lessons_exists = cursor.fetchone()[0]
+        
+        if not lessons_exists:
+            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'lessons' не существует!")
+            logger.error("Создайте таблицы вручную согласно schema_postgres.sql")
+            return False
+        
+        # Проверяем наличие необходимых колонок в lessons
+        cursor.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'lessons' 
+            AND column_name IN ('id', 'user_id', 'name')
+        """)
+        lessons_columns = {row[0] for row in cursor.fetchall()}
+        required_lessons_columns = {'id', 'user_id', 'name'}
+        
+        if lessons_columns != required_lessons_columns:
+            missing = required_lessons_columns - lessons_columns
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'lessons' отсутствуют колонки: {missing}")
+            logger.error("Структура таблицы не соответствует schema_postgres.sql")
+            return False
+        
+        # Проверяем таблицу categories
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'categories'
+            )
+        """)
+        categories_exists = cursor.fetchone()[0]
+        
+        if not categories_exists:
+            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'categories' не существует!")
+            logger.error("Создайте таблицы вручную согласно schema_postgres.sql")
+            return False
+        
+        # Проверяем наличие необходимых колонок в categories
+        cursor.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'categories' 
+            AND column_name IN ('id', 'user_id', 'name')
+        """)
+        categories_columns = {row[0] for row in cursor.fetchall()}
+        required_categories_columns = {'id', 'user_id', 'name'}
+        
+        if categories_columns != required_categories_columns:
+            missing = required_categories_columns - categories_columns
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'categories' отсутствуют колонки: {missing}")
+            logger.error("Структура таблицы не соответствует schema_postgres.sql")
+            return False
+        
+        # Проверяем таблицу users
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'users'
+            )
+        """)
+        users_exists = cursor.fetchone()[0]
+        
+        if not users_exists:
+            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Таблица 'users' не существует!")
+            logger.error("Создайте таблицы вручную согласно schema_postgres.sql")
+            return False
+        
+        # Проверяем наличие необходимых колонок в users
+        cursor.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'users' 
+            AND column_name IN ('user_id', 'username', 'is_admin', 'is_tracked', 'added_at', 'notes')
+        """)
+        users_columns = {row[0] for row in cursor.fetchall()}
+        required_users_columns = {'user_id', 'username', 'is_admin', 'is_tracked', 'added_at', 'notes'}
+        
+        if users_columns != required_users_columns:
+            missing = required_users_columns - users_columns
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: В таблице 'users' отсутствуют колонки: {missing}")
+            logger.error("Структура таблицы не соответствует schema_postgres.sql")
+            return False
+        
+        logger.info("✅ База данных PostgreSQL подключена")
         logger.info("✅ Структура базы данных проверена и соответствует схеме")
         return True
         
@@ -279,29 +233,18 @@ def add_user(user_id, username=None, is_admin=False, is_tracked=False, notes=Non
         
         if existing:
             # Обновляем существующего пользователя
-            existing_admin = existing[0] if USE_POSTGRES else existing['is_admin']
-            existing_tracked = existing[1] if USE_POSTGRES else existing['is_tracked']
+            existing_admin = existing[0]
+            existing_tracked = existing[1]
             
-            if USE_POSTGRES:
-                cursor.execute(f"""
-                    UPDATE users 
-                    SET username = COALESCE({param}, username),
-                        is_admin = {param},
-                        is_tracked = {param},
-                        notes = COALESCE({param}, notes)
-                    WHERE user_id = {param}
-                """, (username, 1 if is_admin else existing_admin, 
-                      1 if is_tracked else existing_tracked, notes, user_id))
-            else:
-                cursor.execute(f"""
-                    UPDATE users 
-                    SET username = COALESCE({param}, username),
-                        is_admin = {param},
-                        is_tracked = {param},
-                        notes = COALESCE({param}, notes)
-                    WHERE user_id = {param}
-                """, (username, 1 if is_admin else existing_admin, 
-                      1 if is_tracked else existing_tracked, notes, user_id))
+            cursor.execute(f"""
+                UPDATE users 
+                SET username = COALESCE({param}, username),
+                    is_admin = {param},
+                    is_tracked = {param},
+                    notes = COALESCE({param}, notes)
+                WHERE user_id = {param}
+            """, (username, 1 if is_admin else existing_admin, 
+                  1 if is_tracked else existing_tracked, notes, user_id))
         else:
             # Добавляем нового пользователя
             cursor.execute(f"""
@@ -362,10 +305,7 @@ def get_tracked_users():
         cursor = conn.cursor()
         cursor.execute("SELECT user_id FROM users WHERE is_tracked = 1")
         results = cursor.fetchall()
-        if USE_POSTGRES:
-            return {row[0] for row in results}
-        else:
-            return {row['user_id'] for row in results}
+        return {row[0] for row in results}
     except Exception as e:
         logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
         return set()
@@ -388,10 +328,7 @@ def get_tracked_users_with_info():
         cursor = conn.cursor()
         cursor.execute("SELECT user_id, username FROM users WHERE is_tracked = 1 ORDER BY added_at DESC")
         results = cursor.fetchall()
-        if USE_POSTGRES:
-            return [{'user_id': row[0], 'username': row[1]} for row in results]
-        else:
-            return [{'user_id': row['user_id'], 'username': row['username']} for row in results]
+        return [{'user_id': row[0], 'username': row[1]} for row in results]
     except Exception as e:
         logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
         return []
@@ -440,10 +377,7 @@ def get_admins():
         cursor = conn.cursor()
         cursor.execute("SELECT user_id, username FROM users WHERE is_admin = 1")
         results = cursor.fetchall()
-        if USE_POSTGRES:
-            return [{'user_id': row[0], 'username': row[1]} for row in results]
-        else:
-            return [{'user_id': row['user_id'], 'username': row['username']} for row in results]
+        return [{'user_id': row[0], 'username': row[1]} for row in results]
     except Exception as e:
         logger.error(f"Ошибка при получении списка администраторов: {e}", exc_info=True)
         return []
@@ -523,18 +457,19 @@ def add_tracked_user(user_id, username=None, notes=None):
     """Добавляет пользователя в список отслеживаемых (для обратной совместимости)"""
     return add_user(user_id, username=username, is_tracked=True, notes=notes)
 
-def create_lesson(lesson_name):
+def create_lesson(lesson_name, user_id):
     """
     Создает новый урок в базе данных
     
     Args:
         lesson_name: Название урока
+        user_id: ID пользователя
     
     Returns:
         int: ID созданного урока или None в случае ошибки
     
     Raises:
-        ValueError: Если урок с таким именем уже существует
+        ValueError: Если урок с таким именем уже существует для этого пользователя
     """
     conn = get_connection()
     if not conn:
@@ -544,24 +479,20 @@ def create_lesson(lesson_name):
         cursor = conn.cursor()
         param = get_param()
         
-        # Проверяем, существует ли уже урок с таким именем
-        cursor.execute(f"SELECT id FROM lessons WHERE name = {param}", (lesson_name,))
+        # Проверяем, существует ли уже урок с таким именем у этого пользователя
+        cursor.execute(f"SELECT id FROM lessons WHERE user_id = {param} AND name = {param}", (user_id, lesson_name))
         existing = cursor.fetchone()
         
         if existing:
             raise ValueError(f"Урок с именем '{lesson_name}' уже существует")
         
         # Создаем новый урок
-        if USE_POSTGRES:
-            cursor.execute(f"INSERT INTO lessons (name) VALUES ({param}) RETURNING id", (lesson_name,))
-            lesson_id = cursor.fetchone()[0]
-        else:
-            cursor.execute(f"INSERT INTO lessons (name) VALUES ({param})", (lesson_name,))
-            lesson_id = cursor.lastrowid
+        cursor.execute(f"INSERT INTO lessons (user_id, name) VALUES ({param}, {param}) RETURNING id", (user_id, lesson_name))
+        lesson_id = cursor.fetchone()[0]
         
         conn.commit()
         
-        logger.info(f"✅ Создан урок: {lesson_name} (ID: {lesson_id})")
+        logger.info(f"✅ Создан урок: {lesson_name} (ID: {lesson_id}) для user_id={user_id}")
         return lesson_id
         
     except ValueError:
@@ -576,12 +507,13 @@ def create_lesson(lesson_name):
         if conn:
             return_connection(conn)
 
-def get_lesson_id(lesson_name):
+def get_lesson_id(lesson_name, user_id):
     """
-    Получает ID урока по его имени
+    Получает ID урока по его имени для конкретного пользователя
     
     Args:
         lesson_name: Название урока
+        user_id: ID пользователя
     
     Returns:
         int: ID урока или None если не найден
@@ -593,14 +525,11 @@ def get_lesson_id(lesson_name):
     try:
         cursor = conn.cursor()
         param = get_param()
-        cursor.execute(f"SELECT id FROM lessons WHERE name = {param}", (lesson_name,))
+        cursor.execute(f"SELECT id FROM lessons WHERE user_id = {param} AND name = {param}", (user_id, lesson_name))
         result = cursor.fetchone()
         
         if result:
-            if USE_POSTGRES:
-                return result[0]
-            else:
-                return result['id']
+            return result[0]
         return None
         
     except Exception as e:
@@ -610,9 +539,12 @@ def get_lesson_id(lesson_name):
         if conn:
             return_connection(conn)
 
-def get_all_lessons():
+def get_all_lessons(user_id):
     """
-    Получает список всех уроков из базы данных
+    Получает список всех уроков пользователя из базы данных
+    
+    Args:
+        user_id: ID пользователя
     
     Returns:
         list: Список словарей с информацией об уроках [{'id': int, 'name': str}, ...]
@@ -623,15 +555,13 @@ def get_all_lessons():
     
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name FROM lessons ORDER BY name")
+        param = get_param()
+        cursor.execute(f"SELECT id, name FROM lessons WHERE user_id = {param} ORDER BY name", (user_id,))
         results = cursor.fetchall()
         
         lessons = []
         for row in results:
-            if USE_POSTGRES:
-                lessons.append({'id': row[0], 'name': row[1]})
-            else:
-                lessons.append({'id': row['id'], 'name': row['name']})
+            lessons.append({'id': row[0], 'name': row[1]})
         
         return lessons
         

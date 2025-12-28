@@ -113,7 +113,7 @@ async def handle_add_word(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     # Создаем урок (если уже существует - ошибка)
     from database import create_lesson
     try:
-        lesson_id = create_lesson(lesson_name)
+        lesson_id = create_lesson(lesson_name, user_id)
         if lesson_id is None:
             await update.message.reply_text(
                 f"❌ Ошибка при создании урока '{lesson_name}'"
@@ -263,7 +263,7 @@ async def handle_training_command(update: Update, context: ContextTypes.DEFAULT_
     if context.args and len(context.args) > 0:
         lesson_name = ' '.join(context.args).strip()
         from database import get_lesson_id
-        lesson_id = get_lesson_id(lesson_name)
+        lesson_id = get_lesson_id(lesson_name, user_id)
         
         if lesson_id is None:
             await update.message.reply_text(
@@ -277,7 +277,7 @@ async def handle_training_command(update: Update, context: ContextTypes.DEFAULT_
     # Проверяем наличие слов (с учетом урока, если указан)
     if lesson_id is not None:
         # Проверяем количество слов в уроке
-        from database import get_connection, return_connection, get_param, USE_POSTGRES
+        from database import get_connection, return_connection, get_param
         conn = get_connection()
         if conn:
             try:
@@ -286,10 +286,7 @@ async def handle_training_command(update: Update, context: ContextTypes.DEFAULT_
                 count_query = f"SELECT COUNT(*) FROM vocabulary WHERE user_id = {param} AND lesson_id = {param}"
                 cursor.execute(count_query, (user_id, lesson_id))
                 count_result = cursor.fetchone()
-                if USE_POSTGRES:
-                    word_count = count_result[0] if count_result else 0
-                else:
-                    word_count = count_result[0] if count_result else 0
+                word_count = count_result[0] if count_result else 0
                 return_connection(conn)
                 
                 if word_count == 0:

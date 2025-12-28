@@ -3,7 +3,7 @@
 """
 import logging
 from vocabulary import Vocabulary
-from database import is_tracked_user as db_is_tracked_user, get_connection, return_connection, get_param, USE_POSTGRES
+from database import is_tracked_user as db_is_tracked_user, get_connection, return_connection, get_param
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +77,8 @@ def get_user_stats(user_id, lesson_id=None):
             result = cursor.fetchone()
             
             if result:
-                if USE_POSTGRES:
-                    training_correct = result[0] if result[0] else 0
-                    training_unsuccessful = result[1] if result[1] else 0
-                else:
-                    training_correct = result['total_successful'] if result['total_successful'] else 0
-                    training_unsuccessful = result['total_unsuccessful'] if result['total_unsuccessful'] else 0
+                training_correct = result[0] if result[0] else 0
+                training_unsuccessful = result[1] if result[1] else 0
                 
                 training_total = training_correct + training_unsuccessful
             
