@@ -690,10 +690,10 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = f"📊 Статистика по уроку: <b>{lesson_name}</b>\n\n"
     
     # Часть 2: Статистика
-    stats = get_user_stats(user_id, lesson_id=lesson_id)
-    vocab = Vocabulary(user_id=user_id)
-    
     if lesson_id is not None:
+        # Статистика по конкретному уроку
+        stats = get_user_stats(user_id, lesson_id=lesson_id)
+        
         # Подсчитываем слова только в этом уроке
         from database import get_connection, return_connection, get_param, USE_POSTGRES
         conn = get_connection()
@@ -712,22 +712,39 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return_connection(conn)
         else:
             vocab_count = 0
+        
+        training_total = stats['training_words']['total']
+        training_correct = stats['training_words']['correct']
+        training_accuracy = (training_correct / training_total * 100) if training_total > 0 else 0
+        
+        message += f"""
+📚 Словарь:
+   Слов в уроке: {vocab_count}
+
+📝 Тренировка слов:
+   Попыток: {training_total}
+   Правильных: {training_correct}
+   Точность: {training_accuracy:.1f}%
+    """
     else:
+        # Общая статистика
+        stats = get_user_stats(user_id)
+        vocab = Vocabulary(user_id=user_id)
         vocab_count = vocab.count()
-    
-    total = stats['total_attempts']
-    correct = stats['correct_attempts']
-    accuracy = (correct / total * 100) if total > 0 else 0
-    
-    training_total = stats['training_words']['total']
-    training_correct = stats['training_words']['correct']
-    training_accuracy = (training_correct / training_total * 100) if training_total > 0 else 0
-    
-    reading_total = stats['text_reading']['total']
-    reading_correct = stats['text_reading']['correct']
-    reading_accuracy = (reading_correct / reading_total * 100) if reading_total > 0 else 0
-    
-    message += f"""
+        
+        total = stats['total_attempts']
+        correct = stats['correct_attempts']
+        accuracy = (correct / total * 100) if total > 0 else 0
+        
+        training_total = stats['training_words']['total']
+        training_correct = stats['training_words']['correct']
+        training_accuracy = (training_correct / training_total * 100) if training_total > 0 else 0
+        
+        reading_total = stats['text_reading']['total']
+        reading_correct = stats['text_reading']['correct']
+        reading_accuracy = (reading_correct / reading_total * 100) if reading_total > 0 else 0
+        
+        message += f"""
 📚 Словарь:
    Слов в словаре: {vocab_count}
 
@@ -858,8 +875,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from commands import handle_add_word
         await handle_add_word(update, context, text)
     elif state['mode'] == 'training' or state['mode'] == 'ai_training':
-        # В режиме тренировки текстовые сообщения не обрабатываются
-        await update.message.reply_text("Пожалуйста, отправьте голосовое сообщение")
+        # Проверяем, не хочет ли пользователь пропустить слово
+        if text.strip() == '-':
+            # Пропускаем слово без изменения статистики
+            from user_state import send_next_training_word
+            await update.message.reply_text("⏭️ Слово пропущено")
+            await send_next_training_word(update, context)
+        else:
+            # В режиме тренировки текстовые сообщения не обрабатываются
+            await update.message.reply_text("Пожалуйста, отправьте голосовое сообщение или отправьте '-' для пропуска слова")
     elif state['mode'] == 'read_text_waiting':
         # Пользователь отправил текст для чтения
         state['mode'] = 'read_text'
